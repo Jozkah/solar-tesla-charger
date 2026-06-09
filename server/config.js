@@ -18,10 +18,21 @@ const fileConfig = readJson(path.join(ROOT, 'config.json'));
 
 export const config = {
   ...fileConfig,
+  server: {
+    ...(fileConfig.server || {}),
+    port: Number(process.env.PORT) || fileConfig.server?.port || 3000,
+    host: process.env.HOST || fileConfig.server?.host || '0.0.0.0',
+  },
+  control: {
+    ...fileConfig.control,
+    // DRY_RUN=1 forces no-command mode (safe for running a second/test instance
+    // alongside the live one — it won't send conflicting Tesla charge commands).
+    dryRun: process.env.DRY_RUN === '1' ? true : fileConfig.control.dryRun,
+  },
   paths: {
     root: ROOT,
     public: path.join(ROOT, 'public'),
-    db: path.resolve(ROOT, fileConfig.db.path),
+    db: process.env.DB_PATH ? path.resolve(process.env.DB_PATH) : path.resolve(ROOT, fileConfig.db.path),
   },
   tesla: {
     ...fileConfig.tesla,
@@ -62,6 +73,25 @@ export const config = {
     ntfy: { server: process.env.NTFY_SERVER || 'https://ntfy.sh', topic: process.env.NTFY_TOPIC || '', token: process.env.NTFY_TOKEN || '' },
     pushover: { token: process.env.PUSHOVER_TOKEN || '', user: process.env.PUSHOVER_USER || '' },
     telegram: { token: process.env.TELEGRAM_BOT_TOKEN || '', chatId: process.env.TELEGRAM_CHAT_ID || '' },
+  },
+  // Home dashboard: Agent DVR cameras. Credentials may live in .env instead of
+  // config.json (they end up in URLs server-side only — never sent to the browser).
+  cameras: {
+    ...(fileConfig.cameras || {}),
+    host: process.env.CAMERAS_HOST || fileConfig.cameras?.host || 'http://localhost:8090',
+    auth: {
+      user: process.env.CAMERAS_USER || fileConfig.cameras?.auth?.user || '',
+      pass: process.env.CAMERAS_PASS || fileConfig.cameras?.auth?.pass || '',
+    },
+  },
+  // Home dashboard: TP-Link smart plugs (Kasa over port 9999, or Tapo over KLAP).
+  kasa: {
+    ...(fileConfig.kasa || {}),
+    // Tapo plugs need the TP-Link account credentials for the local handshake.
+    tapo: {
+      email: process.env.TAPO_EMAIL || fileConfig.kasa?.tapo?.email || '',
+      password: process.env.TAPO_PASSWORD || fileConfig.kasa?.tapo?.password || '',
+    },
   },
 };
 

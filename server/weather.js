@@ -72,4 +72,79 @@ export function getCached(lat, lon) {
   return cache;
 }
 
-export default { enabled, getCached };
+// --- Forecast (hourly next ~24h + daily ~7d) --------------------------------
+// Changes slowly, so cached far longer than current conditions (forecastMin, ~30m).
+let fcCache = null;
+let fcLastFetch = 0;
+let fcLastLoc = null;
+let fcInflight = false;
+
+async function refreshForecast(lat, lon) {
+  if (fcInflight) return;
+  fcInflight = true;
+  try {
+    const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}`
+      + `&hourly=temperature_2m,precipitation_probability,weather_code,cloud_cover`
+      + `&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max,sunrise,sunset`
+      + `&forecast_days=14&timezone=auto`;
+    const r = await fetch(url, { signal: AbortSignal.timeout(W.timeoutMs || 8000) });
+    const j = await r.json();
+
+    // Align "now" to the location's local hour using the API's UTC offset.
+    const offset = j.utc_offset_seconds || 0;
+    const nowHour = new Date(Date.now() + offset * 1000).toISOString().slice(0, 13); // YYYY-MM-DDTHH
+    const h = j.hourly || {};
+    const times = h.time || [];
+    let start = times.findIndex((t) => String(t).slice(0, 13) >= nowHour);
+    if (start < 0) start = 0;
+    const hourly = [];
+    for (let i = start; i < times.length && hourly.length < 24; i++) {
+      const code = h.weather_code?.[i];
+      const [icon, text] = CODES[code] || ['🌡️', ''];
+      hourly.push({
+        time: times[i],
+        tempC: h.temperature_2m?.[i],
+        precip: h.precipitation_probability?.[i],
+        cloudCover: h.cloud_cover?.[i],
+        code, icon, text,
+      });
+    }
+
+    const d = j.daily || {};
+    const dTimes = d.time || [];
+    const daily = dTimes.map((t, i) => {
+      const code = d.weather_code?.[i];
+      const [icon, text] = CODES[code] || ['🌡️', ''];
+      return {
+        date: t,
+        tMax: d.temperature_2m_max?.[i],
+        tMin: d.temperature_2m_min?.[i],
+        precip: d.precipitation_probability_max?.[i],
+        sunrise: d.sunrise?.[i],
+        sunset: d.sunset?.[i],
+        code, icon, text,
+      };
+    });
+
+    fcCache = { ok: true, hourly, daily, ts: Date.now() };
+    fcLastLoc = `${lat},${lon}`;
+  } catch (e) {
+    fcCache = { ...(fcCache || {}), ok: false, error: String(e.message || e), ts: Date.now() };
+  } finally {
+    fcInflight = false;
+    fcLastFetch = Date.now();
+  }
+}
+
+export function getForecast(lat, lon) {
+  if (!enabled()) return null;
+  if (lat == null || lon == null) {
+    if (W.lat != null && W.lon != null) { lat = W.lat; lon = W.lon; } else return fcCache;
+  }
+  const stale = Date.now() - fcLastFetch > (W.forecastMin || 30) * 60_000;
+  const moved = fcLastLoc !== `${lat},${lon}`;
+  if (stale || moved) refreshForecast(lat, lon);
+  return fcCache;
+}
+
+export default { enabled, getCached, getForecast };

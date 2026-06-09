@@ -21,6 +21,8 @@ import * as wallconnector from './wallconnector.js';
 import * as solax from './solax.js';
 import * as weather from './weather.js';
 import * as notify from './notify.js';
+import * as kasa from './kasa.js';
+import * as cameras from './cameras.js';
 import * as db from './db.js';
 
 const C = config.control;
@@ -42,6 +44,8 @@ export const state = {
   wc: null, // wall connector vitals
   solax: null, // SolaX cloud generation (solarPanel1)
   weather: null, // current weather at the car location
+  kasa: null, // home dashboard: TP-Link smart plugs (cached)
+  cameras: null, // home dashboard: Agent DVR reachability status
   computed: null,
   charging: false,
   teslaConfigured: teslaConfigured(),
@@ -229,6 +233,8 @@ async function liveCycle() {
     state.solax = solax.getCached(); // cached; refreshes itself at most once per pollSec
     const loc = state.car?.location;
     state.weather = weather.getCached(loc?.lat, loc?.lon); // cached; refreshes ~every pollMin
+    state.kasa = kasa.getCached(); // cached; refreshes itself at most once per pollSec
+    state.cameras = cameras.getStatus(); // reachability only; video flows via proxy routes
     if (state.lastError && state.lastError.startsWith('shelly')) state.lastError = null;
     const d = computeDecision(meters, state.car, wc);
     state.charging = d.isCharging;
@@ -396,12 +402,15 @@ export function start() {
   const live = () => liveCycle().catch((e) => { state.lastError = String(e.message || e); });
   const ctrl = () => controlCycle().catch((e) => { state.lastError = String(e.message || e); });
   const car = () => carCycle().catch((e) => { state.lastError = String(e.message || e); });
+  const camStatus = () => cameras.refreshStatus().catch(() => {}); // home dashboard reachability
   live();
+  camStatus();
   setTimeout(car, 1500); // first car read shortly after meters
   setTimeout(ctrl, 2500); // let meters + car populate first
   timers.push(setInterval(live, (C.livePollSec || 2) * 1000));
   timers.push(setInterval(ctrl, C.pollIntervalSec * 1000));
   timers.push(setInterval(car, (C.carPollSec || 90) * 1000));
+  timers.push(setInterval(camStatus, (config.cameras?.statusPollSec || 45) * 1000));
   timers.push(setInterval(() => db.pruneOld(), 86_400_000));
   timers.forEach((t) => t.unref?.());
 }

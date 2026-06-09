@@ -240,12 +240,14 @@ function renderControls(s) {
     else { btn.textContent = '▶ Start charge'; btn.className = TOGGLE_BASE + 'lg-btn-green'; btn.dataset.action = 'start'; }
   }
 
-  // Sync the slider to the server's auto-ceiling unless the user is dragging it.
+  // Sync the slider to what it currently controls: the live override amps while
+  // override mode is on, otherwise the solar-auto ceiling. Skip while dragging.
   const range = $('ovRange');
   const dragging = document.activeElement === range || (range._touchedAt && Date.now() - range._touchedAt < 4000);
-  if (!dragging && s.maxAmps != null && Number(range.value) !== s.maxAmps) {
-    range.value = s.maxAmps;
-    $('ovVal').textContent = s.maxAmps;
+  const sliderTarget = s.override ? s.override.amps : s.maxAmps;
+  if (!dragging && sliderTarget != null && Number(range.value) !== sliderTarget) {
+    range.value = sliderTarget;
+    $('ovVal').textContent = sliderTarget;
   }
 
   // Schedule card (don't clobber inputs the user is editing).
@@ -272,7 +274,7 @@ function renderControls(s) {
     clear.className = 'lg-btn lg-btn-soft flex-1';
     clear.disabled = false;
     clear.style.cssText = '';
-    if (lbl) lbl.textContent = 'Override active';
+    if (lbl) lbl.textContent = 'Override on — drag to adjust';
   } else {
     apply.className = 'lg-btn lg-btn-soft flex-1';
     apply.textContent = 'Override';
@@ -296,7 +298,9 @@ function renderDetail(s) {
   add('Outside', C(car.outsideTemp));
   add('Battery', car.batteryLevel != null ? car.batteryLevel : null, '%');
   add('Range', car.estRangeKm != null ? Math.round(car.estRangeKm) : null, 'km');
-  add('To full', s.charging && car.timeToFull > 0 ? fmtEta(car.timeToFull) : null);
+  const charging = s.charging && car.timeToFull > 0;
+  add(`To ${car.chargeLimitSoc || 100}%`, charging ? fmtEta(car.timeToFull) : null);
+  add('Done by', charging ? fmtClock(car.timeToFull) : null);
 
   if (!tiles.length) { grid.innerHTML = `<div class="text-mut text-[12px] col-span-3 px-1">No vehicle data yet.</div>`; return; }
   grid.innerHTML = tiles.map(([k, v, u]) =>
@@ -328,6 +332,13 @@ function fmtEta(h) {
   return hh ? `${hh}h${mm}m` : `${mm}m`;
 }
 
+// Absolute completion clock time, e.g. "03:45" — h is hours-from-now.
+function fmtClock(h) {
+  if (!h || h <= 0) return '';
+  const d = new Date(Date.now() + h * 3600e3);
+  return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
 function renderBanner(s) {
   const b = $('banner'); const comp = s.computed; const msgs = [];
   if (!s.teslaConfigured) msgs.push('Tesla not configured — set TESLA*/TESLAMATEAPI* in .env. Monitoring only.');
@@ -337,6 +348,7 @@ function renderBanner(s) {
     msgs.push('⚠ ' + s.lastError);
   }
   if (s.override) msgs.push(`Override: holding ${s.override.amps}A` + (s.override.expiresAt ? ` until ${new Date(s.override.expiresAt).toLocaleTimeString()}` : ''));
+  if (comp?.solarCouldChargeFaster && s.override) msgs.push(`☀️ Solar could charge faster — surplus supports ${comp.potentialAmps}A vs your ${s.override.amps}A override. Tap “Auto” to use the free solar.`);
   if (comp?.scheduleActive) msgs.push(`🌙 Scheduled charge active — charging from grid at ${s.schedule?.amps}A.`);
   if (comp?.insufficientSolar) msgs.push('⛅ Charging stopped — not enough solar energy.');
   if (comp?.throttled) msgs.push(`⚡ Car throttling to ${comp.actualAmps}A (set ${comp.commandedAmps}A) — line voltage dropping under load.`);
@@ -398,7 +410,7 @@ function drawChart() {
 
 // Hover / touch tooltip
 const box = $('chartBox'), tip = $('tooltip'), cross = $('crosshair');
-function onHover(clientX) {
+function onHover(clientX, clientY) {
   if (!chartScale || chartData.length < 2) return;
   const rect = box.getBoundingClientRect();
   const px = clientX - rect.left;
@@ -410,19 +422,26 @@ function onHover(clientX) {
   const xpx = (chartScale.sx(best.ts) / CH.W) * rect.width;
   cross.style.left = xpx + 'px'; cross.hidden = false;
   tip.hidden = false;
-  tip.style.left = clampN(xpx, 50, rect.width - 50) + 'px';
-  tip.style.top = '8px';
+  // Fill content first so we can measure the box for vertical clamping.
   tip.innerHTML = `<div class="t-time">${new Date(best.ts).toLocaleTimeString()}</div>`
     + `<div class="t-row"><i style="background:#34d399"></i>export ${fmtW(best.exportW)} W</div>`
     + `<div class="t-row"><i style="background:#60a5fa"></i>charge ${fmtW(best.chargeW)} W</div>`
     + `<div class="t-row"><i style="background:#fbbf24"></i>solar ${fmtW(best.solarW)} W</div>`
     + `<div class="t-row"><i style="background:#FF453A"></i>import ${fmtW(best.importW || 0)} W</div>`;
+  tip.style.left = clampN(xpx, 60, rect.width - 60) + 'px';
+  // Float above the cursor, but flip below it (and clamp) if that would clip the top —
+  // so the tooltip never escapes up into the range buttons above the chart.
+  const th = tip.offsetHeight;
+  const py = clientY != null ? clientY - rect.top : rect.height / 2;
+  let top = py - th - 14;
+  if (top < 4) top = py + 18;
+  tip.style.top = clampN(top, 4, Math.max(4, rect.height - th - 4)) + 'px';
 }
 function hideHover() { tip.hidden = true; cross.hidden = true; }
-box.addEventListener('mousemove', (e) => onHover(e.clientX));
+box.addEventListener('mousemove', (e) => onHover(e.clientX, e.clientY));
 box.addEventListener('mouseleave', hideHover);
-box.addEventListener('touchstart', (e) => onHover(e.touches[0].clientX), { passive: true });
-box.addEventListener('touchmove', (e) => onHover(e.touches[0].clientX), { passive: true });
+box.addEventListener('touchstart', (e) => onHover(e.touches[0].clientX, e.touches[0].clientY), { passive: true });
+box.addEventListener('touchmove', (e) => onHover(e.touches[0].clientX, e.touches[0].clientY), { passive: true });
 box.addEventListener('touchend', hideHover);
 
 // --- Stats ------------------------------------------------------------------
@@ -480,8 +499,16 @@ document.querySelectorAll('#chartRangeSeg button').forEach((b) => b.addEventList
 setInterval(() => { if (chartHours > 1) loadChartHistory(); }, 30000);
 
 $('ovRange').addEventListener('input', (e) => { $('ovVal').textContent = e.target.value; e.target._touchedAt = Date.now(); });
-// Releasing the slider sets the auto ceiling (auto charges between 5A and this value).
-$('ovRange').addEventListener('change', (e) => { post('/api/maxamps', { amps: Number(e.target.value) }); });
+// Releasing the slider applies its value. With override mode on it live-adjusts the
+// forced charge amps (no need to re-press Override); otherwise it sets the solar-auto
+// ceiling (auto charges between 5A and this value).
+$('ovRange').addEventListener('change', (e) => {
+  const amps = Number(e.target.value);
+  if (lastState?.override) post('/api/override', { amps });
+  else post('/api/maxamps', { amps });
+});
+// The Override button only turns override mode ON (forces a charge at the current
+// slider value); the slider then adjusts the rate live. "Back to auto" turns it off.
 $('ovApply').addEventListener('click', () => post('/api/override', { amps: Number($('ovRange').value) }));
 $('ovClear').addEventListener('click', () => post('/api/override/clear'));
 $('chargeToggle').addEventListener('click', () => charge($('chargeToggle').dataset.action || 'start'));

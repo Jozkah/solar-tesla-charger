@@ -51,11 +51,14 @@ export const state = {
 let session = null;
 let lastSetAmps = null;
 let timers = [];
+let controlBusy = false; // guards controlCycle against overlapping runs (interval + kicks)
 
 // Charging start/stop event detection + a small queue the Apple Shortcut drains.
 let prevCharging = null;
 const eventLog = []; // recent events (for reference)
 const pendingNotifications = []; // messages awaiting delivery to the phone
+let solarFasterSince = 0; // when "override slower than solar" first became true (0 = not now)
+let solarFasterNotifiedAt = 0; // last time we pushed that warning (for cooldown)
 
 function recordEvent(type, message) {
   const e = { ts: Date.now(), type, message };
@@ -90,6 +93,21 @@ function maybeNotify(d) {
   }
 }
 
+// Push a one-shot warning when an override is charging slower than the solar
+// surplus could — i.e. free solar is being exported instead of used. Edge-triggered
+// with a sustain window (ignore brief surplus spikes) and a cooldown (don't nag).
+function maybeWarnSolarFaster(now) {
+  const comp = state.computed;
+  if (!comp?.solarCouldChargeFaster || !state.override) { solarFasterSince = 0; return; }
+  if (!solarFasterSince) solarFasterSince = now;
+  const sustainMs = (C.solarFasterSustainSec ?? 120) * 1000;
+  const cooldownMs = (C.solarFasterCooldownMin ?? 30) * 60_000;
+  if (now - solarFasterSince < sustainMs) return; // must persist — ignore passing clouds/spikes
+  if (now - solarFasterNotifiedAt < cooldownMs) return; // already warned recently
+  solarFasterNotifiedAt = now;
+  recordEvent('solar', `☀️ Solar could charge faster — surplus supports ${comp.potentialAmps}A but you're overriding at ${state.override.amps}A. Switch to Auto to use the free solar.`);
+}
+
 export function getState() {
   return { ...state, ts: Date.now() };
 }
@@ -102,6 +120,7 @@ export function setMode(mode) {
   state.mode = mode;
   if (mode === 'auto') state.override = null;
   emit();
+  kickControl();
   return state.mode;
 }
 export function setOverride(amps, expiresInMin) {
@@ -109,11 +128,13 @@ export function setOverride(amps, expiresInMin) {
   state.override = { amps: a, expiresAt: expiresInMin ? Date.now() + expiresInMin * 60_000 : null };
   state.mode = 'auto';
   emit();
+  kickControl(); // apply the forced charge right away, don't wait for the next tick
   return state.override;
 }
 export function clearOverride() {
   state.override = null;
   emit();
+  kickControl();
 }
 
 // --- Overnight / scheduled grid charging ------------------------------------
@@ -154,11 +175,25 @@ function isScheduleActive() {
 export function setMaxAmps(amps) {
   state.maxAmps = clamp(Math.round(amps), C.minAmps, C.maxAmps);
   emit();
+  kickControl();
   return state.maxAmps;
 }
 export async function manualCharge(action) {
-  if (action === 'start') return tesla.chargeStart();
-  if (action === 'stop') return tesla.chargeStop();
+  if (action === 'start') {
+    // A manual start resumes management. Un-pause so the control loop charges
+    // (use the Override button to force a fixed rate regardless of solar).
+    if (state.mode === 'pause') { state.mode = 'auto'; emit(); }
+    return tesla.chargeStart();
+  }
+  if (action === 'stop') {
+    // A manual stop must stick. Drop any override (otherwise the control loop
+    // immediately re-issues charge_start to honor it) and pause auto so solar
+    // surplus doesn't silently restart the charge. "Back to auto" resumes.
+    state.override = null;
+    state.mode = 'pause';
+    emit();
+    return tesla.chargeStop();
+  }
   throw new Error('action must be start|stop');
 }
 
@@ -193,6 +228,15 @@ function computeDecision(meters, car, wc) {
 }
 
 function setComputed(meters, d) {
+  // Amps the current surplus could sustain (0 if below the minimum to charge).
+  const potentialAmps = clamp(Math.floor(d.surplusW / d.voltage), 0, d.ampCeiling);
+  const ov = state.override;
+  // Override is charging slower than the available solar surplus could sustain, so
+  // free solar is being exported instead of used. Margin avoids noise from small
+  // fluctuations. (When the override draw already exceeds surplus, this is false —
+  // that's "using grid", a different situation the user didn't ask to be warned of.)
+  const solarCouldChargeFaster =
+    !!(ov && d.isCharging && potentialAmps - ov.amps >= (C.solarFasterMarginAmps ?? 2));
   state.computed = {
     exportW: meters.exportW,
     importW: meters.importW,
@@ -207,8 +251,8 @@ function setComputed(meters, d) {
     actualAmps: d.actualAmps,
     throttled: d.throttled,
     minAmps: C.minAmps,
-    // Amps the current surplus could sustain (0 if below the minimum to charge).
-    potentialAmps: clamp(Math.floor(d.surplusW / d.voltage), 0, d.ampCeiling),
+    potentialAmps,
+    solarCouldChargeFaster,
     enoughToCharge: d.enoughToCharge,
     // True when the car is plugged in on auto but charging is held off because
     // the solar surplus can't sustain the minimum amperage.
@@ -234,6 +278,7 @@ async function liveCycle() {
     state.charging = d.isCharging;
     setComputed(meters, d);
     maybeNotify(d);
+    maybeWarnSolarFaster(now);
     state.liveAt = now;
     emit();
   } catch (err) {
@@ -340,6 +385,20 @@ async function controlCycle() {
   emit();
 }
 
+// Guarded entry point: the periodic interval AND the on-demand kicks (override /
+// mode / ceiling changes) both go through here so two cycles never overlap and
+// double-fire Tesla commands.
+async function runControl() {
+  if (controlBusy) return;
+  controlBusy = true;
+  try { await controlCycle(); }
+  finally { controlBusy = false; }
+}
+// Fire-and-forget control cycle for UI actions that want an immediate effect.
+function kickControl() {
+  runControl().catch((e) => { state.lastError = String(e.message || e); });
+}
+
 // --- Helpers ---------------------------------------------------------------
 
 function sane(v) {
@@ -394,7 +453,7 @@ async function safeCmd(label, fn) {
 export function start() {
   if (timers.length) return;
   const live = () => liveCycle().catch((e) => { state.lastError = String(e.message || e); });
-  const ctrl = () => controlCycle().catch((e) => { state.lastError = String(e.message || e); });
+  const ctrl = () => runControl().catch((e) => { state.lastError = String(e.message || e); });
   const car = () => carCycle().catch((e) => { state.lastError = String(e.message || e); });
   live();
   setTimeout(car, 1500); // first car read shortly after meters

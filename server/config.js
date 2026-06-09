@@ -26,17 +26,27 @@ export const config = {
   tesla: {
     ...fileConfig.tesla,
     backend: process.env.TESLA_BACKEND || fileConfig.tesla.backend || 'teslamateapi',
+    // Optional separate backend for *commands* (set/start/stop). Lets reads stay on
+    // TeslaMateApi (gentle, DB-backed) while commands go via the Fleet signing proxy.
+    commandBackend: process.env.TESLA_COMMAND_BACKEND || fileConfig.tesla.commandBackend
+      || process.env.TESLA_BACKEND || fileConfig.tesla.backend || 'teslamateapi',
     // TeslaMateApi backend (default)
     teslamateapi: {
       baseUrl: process.env.TESLAMATEAPI_BASE_URL || fileConfig.tesla.teslamateapi?.baseUrl || 'http://localhost:8080',
       carId: Number(process.env.TESLAMATEAPI_CAR_ID || fileConfig.tesla.teslamateapi?.carId || 1),
       token: process.env.TESLAMATEAPI_TOKEN || '',
     },
-    // Official Fleet API + tesla-http-proxy backend
+    // Official Fleet API + tesla-http-proxy backend (OAuth third-party tokens)
     proxyBaseUrl: process.env.TESLA_PROXY_BASE_URL || fileConfig.tesla.proxyBaseUrl,
     refreshToken: process.env.TESLA_REFRESH_TOKEN || '',
     clientId: process.env.TESLA_CLIENT_ID || '',
-    fleetBase: process.env.TESLA_FLEET_BASE || '',
+    clientSecret: process.env.TESLA_CLIENT_SECRET || '',
+    redirectUri: process.env.TESLA_REDIRECT_URI || 'http://localhost:3000/api/tesla/callback',
+    authorizeUrl: process.env.TESLA_AUTHORIZE_URL || 'https://auth.tesla.com/oauth2/v3/authorize',
+    scopes: process.env.TESLA_SCOPES || 'openid vehicle_device_data vehicle_cmds vehicle_charging_cmds vehicle_location offline_access energy_device_data energy_cmds',
+    fleetBase: process.env.TESLA_FLEET_BASE || 'https://fleet-api.prd.eu.vn.cloud.tesla.com',
+    // OAuth audience (the Fleet API base the token is issued for); defaults to fleetBase.
+    audience: process.env.TESLA_AUDIENCE || process.env.TESLA_FLEET_BASE || 'https://fleet-api.prd.eu.vn.cloud.tesla.com',
     tokenUrl: process.env.TESLA_TOKEN_URL || 'https://fleet-auth.prd.vn.cloud.tesla.com/oauth2/v3/token',
     vin: process.env.TESLA_VIN || '',
   },
@@ -45,6 +55,13 @@ export const config = {
     apiUrl: process.env.SOLAX_API_URL || 'https://global.solaxcloud.com',
     tokenId: process.env.SOLAX_TOKEN_ID || '',
     wifiSn: process.env.SOLAX_WIFI_SN || '',
+  },
+  notify: {
+    ...(fileConfig.notify || {}),
+    channel: process.env.NOTIFY_CHANNEL || fileConfig.notify?.channel || 'auto',
+    ntfy: { server: process.env.NTFY_SERVER || 'https://ntfy.sh', topic: process.env.NTFY_TOPIC || '', token: process.env.NTFY_TOKEN || '' },
+    pushover: { token: process.env.PUSHOVER_TOKEN || '', user: process.env.PUSHOVER_USER || '' },
+    telegram: { token: process.env.TELEGRAM_BOT_TOKEN || '', chatId: process.env.TELEGRAM_CHAT_ID || '' },
   },
 };
 
@@ -57,7 +74,8 @@ export function teslaConfigured() {
     // Token optional only if TeslaMateApi runs with API_TOKEN_DISABLE=true.
     return Boolean(t.teslamateapi?.baseUrl && t.teslamateapi?.carId);
   }
-  return Boolean(t.refreshToken && t.clientId && t.vin);
+  // Fleet API (proxy/fleet): OAuth third-party tokens (client creds + VIN).
+  return Boolean(t.clientId && t.clientSecret && t.vin);
 }
 
 export default config;

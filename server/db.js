@@ -21,6 +21,7 @@ db.exec(`
     charge_amps   INTEGER,
     target_amps   INTEGER,
     charge_w      REAL,
+    solax_w       REAL,
     mode          TEXT,
     action        TEXT
   );
@@ -40,11 +41,14 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_samples_ts ON samples(ts);
 `);
 
+// Add columns introduced after the initial schema (no-op if they already exist).
+try { db.exec('ALTER TABLE samples ADD COLUMN solax_w REAL'); } catch { /* already exists */ }
+
 const insertSample = db.prepare(`
   INSERT OR REPLACE INTO samples
     (ts, grid_power, export_w, import_w, solar2_w, floor1_w, floor2_w, voltage,
-     charging, charge_amps, target_amps, charge_w, mode, action)
-  VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+     charging, charge_amps, target_amps, charge_w, solax_w, mode, action)
+  VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 `);
 
 export function recordSample(s) {
@@ -61,6 +65,7 @@ export function recordSample(s) {
     intOrNull(s.chargeAmps),
     intOrNull(s.targetAmps),
     nz(s.chargeW),
+    nz(s.solaxW),
     s.mode || null,
     s.action || null
   );

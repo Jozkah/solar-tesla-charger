@@ -11,9 +11,11 @@
 //     go through a locally-run tesla-http-proxy. Needs TESLA_* tokens in .env.
 import { Agent } from 'undici';
 import config, { teslaConfigured } from './config.js';
+import * as teslaAuth from './teslaAuth.js';
 
 const t = config.tesla;
 const backend = t.backend || 'teslamateapi';
+const cmdBackend = t.commandBackend || backend; // backend used for write commands
 
 // ===========================================================================
 // Shared: normalize a charge_state-ish object into our internal shape.
@@ -70,9 +72,11 @@ async function tmaGetVehicleData() {
   const status = json?.data?.status || json?.data || json || {};
   const charging = status.charging_details || {};
   const battery = status.battery_details || {};
+  const climate = status.climate_details || {};
+  const geo = status.car_geodata || {};
   // TeslaMateApi reports car state as e.g. "charging"/"online"/"asleep".
   const stateHint = mapTmaState(status.state);
-  return normalize(
+  const base = normalize(
     {
       charging_state: charging.charging_state, // may be undefined -> stateHint used
       charge_amps: charging.charge_amps,
@@ -89,6 +93,24 @@ async function tmaGetVehicleData() {
     },
     stateHint
   );
+  // Extras (TeslaMateApi only) — temps, location, charge details.
+  base.outsideTemp = num(climate.outside_temp);
+  base.insideTemp = num(climate.inside_temp);
+  base.climateOn = !!climate.is_climate_on;
+  base.preconditioning = !!climate.is_preconditioning;
+  base.chargeEnergyAdded = num(charging.charge_energy_added);
+  base.chargePortOpen = !!charging.charge_port_door_open;
+  base.estRangeKm = num(battery.est_battery_range);
+  base.ratedRangeKm = num(battery.rated_battery_range);
+  base.odometer = num(status.odometer);
+  base.chargeRateKmh = num(charging.charge_rate);
+  const lat = num(geo.latitude), lon = num(geo.longitude);
+  base.location = lat != null && lon != null ? { lat, lon } : null;
+  const tp = status.tpms_details || {};
+  if (tp.tpms_pressure_fl != null) {
+    base.tpms = { fl: num(tp.tpms_pressure_fl), fr: num(tp.tpms_pressure_fr), rl: num(tp.tpms_pressure_rl), rr: num(tp.tpms_pressure_rr) };
+  }
+  return base;
 }
 
 function mapTmaState(s) {
@@ -123,40 +145,54 @@ async function tmaWake() {
 const proxyAgent = new Agent({
   connect: { rejectUnauthorized: t.rejectUnauthorized === false ? false : true },
 });
-let accessToken = null;
-let accessTokenExp = 0;
-
+// Access tokens come from the OAuth third-party-token manager (teslaAuth.js).
 async function getAccessToken() {
-  const now = Date.now();
-  if (accessToken && now < accessTokenExp - 60_000) return accessToken;
-  if (!t.refreshToken || !t.clientId) throw new Error('Tesla proxy backend not configured (missing token/client id).');
-  const body = new URLSearchParams({ grant_type: 'refresh_token', client_id: t.clientId, refresh_token: t.refreshToken });
-  const res = await fetch(t.tokenUrl, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body });
-  if (!res.ok) throw new Error(`Token refresh failed: HTTP ${res.status} ${await safeText(res)}`);
-  const json = await res.json();
-  accessToken = json.access_token;
-  accessTokenExp = now + (json.expires_in || 28800) * 1000;
-  return accessToken;
+  return teslaAuth.getAccessToken();
 }
 async function proxyHeaders() {
   return { Authorization: `Bearer ${await getAccessToken()}`, 'Content-Type': 'application/json' };
 }
-async function proxyGetVehicleData() {
-  const url = `${t.fleetBase}/api/1/vehicles/${t.vin}/vehicle_data?endpoints=${encodeURIComponent('charge_state')}`;
+async function proxyVehicleDataRaw(endpoints) {
+  const url = `${t.fleetBase}/api/1/vehicles/${t.vin}/vehicle_data?endpoints=${encodeURIComponent(endpoints)}`;
   let res = await fetch(url, { headers: await proxyHeaders() });
   if (res.status === 408 && t.wakeIfAsleep) {
-    await proxyWake();
+    await fleetWake();
     await sleep(8000);
     res = await fetch(url, { headers: await proxyHeaders() });
+  }
+  return res;
+}
+async function proxyGetVehicleData() {
+  // Prefer including location (needs vehicle_location scope); fall back gracefully
+  // if the token doesn't have it yet, so reads keep working pre-re-auth.
+  let res = await proxyVehicleDataRaw('charge_state;climate_state;location_data');
+  if (res.status === 403 && /scope/i.test(await peek(res))) {
+    res = await proxyVehicleDataRaw('charge_state;climate_state');
   }
   if (!res.ok) {
     const err = new Error(`vehicle_data HTTP ${res.status} ${await safeText(res)}`);
     err.status = res.status;
     throw err;
   }
-  const json = await res.json();
-  return normalize(json?.response?.charge_state || {});
+  const resp = (await res.json())?.response || {};
+  const cs = resp.charge_state || {};
+  const cl = resp.climate_state || {};
+  const ds = resp.drive_state || {};
+  const base = normalize(cs);
+  base.outsideTemp = num(cl.outside_temp);
+  base.insideTemp = num(cl.inside_temp);
+  base.climateOn = !!cl.is_climate_on;
+  base.preconditioning = !!cl.is_preconditioning;
+  base.chargeEnergyAdded = num(cs.charge_energy_added);
+  base.chargePortOpen = cs.charge_port_door_open === true;
+  base.estRangeKm = mi2km(num(cs.est_battery_range) ?? num(cs.ideal_battery_range) ?? num(cs.battery_range));
+  base.ratedRangeKm = mi2km(num(cs.battery_range));
+  const lat = num(ds.latitude), lon = num(ds.longitude);
+  base.location = lat != null && lon != null ? { lat, lon } : null;
+  return base;
 }
+function mi2km(mi) { return mi == null ? null : Math.round(mi * 1.60934 * 10) / 10; }
+async function peek(res) { try { return await res.clone().text(); } catch { return ''; } }
 async function proxyCommand(command, payload) {
   if (config.control.dryRun) return { dryRun: true, command, payload };
   const url = `${t.proxyBaseUrl}/api/1/vehicles/${t.vin}/command/${command}`;
@@ -179,23 +215,58 @@ async function proxyWake() {
 }
 
 // ===========================================================================
+// Backend: direct Fleet API commands (OAuth token; app key already paired with
+// the vehicle — no local signing proxy needed).
+// ===========================================================================
+async function fleetCommand(command, payload) {
+  if (config.control.dryRun) return { dryRun: true, command, payload };
+  const url = `${t.fleetBase}/api/1/vehicles/${t.vin}/command/${command}`;
+  let lastErr;
+  for (let attempt = 0; attempt <= (t.commandRetries ?? 1); attempt++) {
+    try {
+      const res = await fetch(url, { method: 'POST', headers: await proxyHeaders(), body: JSON.stringify(payload || {}) });
+      const json = await res.json().catch(() => ({}));
+      if (res.status === 408 && t.wakeIfAsleep) { await fleetWake(); await sleep(8000); continue; }
+      if (!res.ok || json?.response?.result === false) {
+        throw new Error(`${command} HTTP ${res.status} ${JSON.stringify(json)}`);
+      }
+      return json;
+    } catch (err) { lastErr = err; await sleep(1500); }
+  }
+  throw lastErr;
+}
+async function fleetWake() {
+  if (config.control.dryRun) return { dryRun: true, command: 'wake_up' };
+  const res = await fetch(`${t.fleetBase}/api/1/vehicles/${t.vin}/wake_up`, { method: 'POST', headers: await proxyHeaders() });
+  return res.json().catch(() => ({}));
+}
+
+// Dispatch a write command to the selected command backend.
+function dispatchCommand(command, payload) {
+  if (cmdBackend === 'fleet') return fleetCommand(command, payload);
+  if (cmdBackend === 'proxy') return proxyCommand(command, payload);
+  return tmaCommand(command, payload);
+}
+
+// ===========================================================================
 // Public API (dispatches to the selected backend)
 // ===========================================================================
 export async function getVehicleData() {
   return backend === 'proxy' ? proxyGetVehicleData() : tmaGetVehicleData();
 }
 export async function setChargingAmps(amps) {
-  const a = Math.round(amps);
-  return backend === 'proxy' ? proxyCommand('set_charging_amps', { charging_amps: a }) : tmaCommand('set_charging_amps', { charging_amps: a });
+  return dispatchCommand('set_charging_amps', { charging_amps: Math.round(amps) });
 }
 export async function chargeStart() {
-  return backend === 'proxy' ? proxyCommand('charge_start', {}) : tmaCommand('charge_start', {});
+  return dispatchCommand('charge_start', {});
 }
 export async function chargeStop() {
-  return backend === 'proxy' ? proxyCommand('charge_stop', {}) : tmaCommand('charge_stop', {});
+  return dispatchCommand('charge_stop', {});
 }
 export async function wake() {
-  return backend === 'proxy' ? proxyWake() : tmaWake();
+  if (cmdBackend === 'fleet') return fleetWake();
+  if (cmdBackend === 'proxy') return proxyWake();
+  return tmaWake();
 }
 
 export { teslaConfigured };

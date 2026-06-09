@@ -5,6 +5,34 @@ const fmtW = (w) => (w == null || Number.isNaN(w) ? '–' : Math.round(w).toLoca
 const fmtKwh = (wh) => (wh == null ? '0' : (wh / 1000).toFixed(2));
 const clampN = (n, lo, hi) => Math.max(lo, Math.min(hi, n));
 
+// --- iOS-style (SF Symbols-ish) inline SVG icons -----------------------------
+const ICON_PATHS = {
+  sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M19.1 4.9l-1.4 1.4M6.3 17.7l-1.4 1.4"/>',
+  cloud: '<path d="M7 18h9a4 4 0 0 0 .5-7.97A6 6 0 0 0 5 9.5 3.5 3.5 0 0 0 7 18z"/>',
+  cloudSun: '<circle cx="7.5" cy="7.5" r="2.6"/><path d="M7.5 2.3v1M2.3 7.5h1M3.9 3.9l.7.7M11.1 3.9l-.7.7"/><path d="M9 19h7a3.5 3.5 0 0 0 .4-6.98A5 5 0 0 0 7 13 3 3 0 0 0 9 19z"/>',
+  rain: '<path d="M7 15h9a4 4 0 0 0 .5-7.97A6 6 0 0 0 5 6.5 3.5 3.5 0 0 0 7 15z"/><path d="M8 19l-1 2M12 19l-1 2M16 19l-1 2"/>',
+  fog: '<path d="M7 13h9a4 4 0 0 0 .5-7.97A6 6 0 0 0 5 4.5 3.5 3.5 0 0 0 7 13z"/><path d="M4 17h14M7 21h10"/>',
+  snow: '<path d="M7 14h9a4 4 0 0 0 .5-7.97A6 6 0 0 0 5 5.5 3.5 3.5 0 0 0 7 14z"/><path d="M9 18.5h.01M13 18.5h.01M11 21h.01"/>',
+  storm: '<path d="M7 14h9a4 4 0 0 0 .5-7.97A6 6 0 0 0 5 5.5 3.5 3.5 0 0 0 7 14z"/><path d="M12 13l-2 4h3l-2 4"/>',
+  bolt: '<path d="M13 2L4 14h7l-1 8 9-12h-7z"/>',
+  target: '<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/>',
+  gauge: '<path d="M4 18a8 8 0 1 1 16 0"/><path d="M12 13l4-3"/><circle cx="12" cy="18" r="1.1"/>',
+};
+function icon(name, size = 20) {
+  const filled = name === 'bolt';
+  return `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="${filled ? 'currentColor' : 'none'}" stroke="${filled ? 'none' : 'currentColor'}" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="display:block">${ICON_PATHS[name] || ''}</svg>`;
+}
+function weatherIconName(code) {
+  if (code === 0) return 'sun';
+  if (code === 1 || code === 2) return 'cloudSun';
+  if (code === 3) return 'cloud';
+  if (code === 45 || code === 48) return 'fog';
+  if ((code >= 51 && code <= 67) || (code >= 80 && code <= 82)) return 'rain';
+  if ((code >= 71 && code <= 77) || code === 85 || code === 86) return 'snow';
+  if (code >= 95) return 'storm';
+  return 'cloud';
+}
+
 let range = 'today';
 let lastState = null;
 let chartData = []; // {ts, exportW, importW, chargeW, solarW}
@@ -22,8 +50,12 @@ function solarFromMeters(m) {
 }
 function solarFromSeries(p) {
   let w = 0;
-  if (p.solar2W < 0) w += -p.solar2W;
-  if (p.floor1W != null && p.floor1W < 0) w += -p.floor1W;
+  if (p.solar2W < 0) w += -p.solar2W; // Growatt clamp
+  if (p.solaxW != null && p.solaxW > 0) {
+    w += p.solaxW; // SolaX (recorded from cloud)
+  } else if (p.floor1W != null && p.floor1W < 0) {
+    w += -p.floor1W; // fallback proxy for older samples without SolaX
+  }
   return w;
 }
 // True total solar = Growatt clamp + SolaX cloud (acpower). Falls back to the
@@ -76,6 +108,8 @@ function handleState(s) {
   renderCards(s);
   renderMeters(s);
   renderControls(s);
+  renderWeather(s);
+  renderDetail(s);
   renderBanner(s);
   pushChartPoint(s);
   $('foot').textContent = `${s.lastAction || ''} · ${new Date(s.ts).toLocaleTimeString()}`;
@@ -98,21 +132,25 @@ function renderHero(s) {
   const exp = m.exportW || 0;
   const imp = m.importW || 0;
   const bar = $('bufferBar'), pct = $('bufferPct'), label = $('bufferLabel'), sub = $('heroSub');
-  if (exporting) {
-    // Percentage of the buffer we're exporting (100% = exactly at buffer target).
+  const row = $('bufferRow'), track = $('bufferTrack');
+  const minA = s.computed?.minAmps ?? 5;
+  const canCharge = (s.computed?.potentialAmps ?? 0) >= minA;
+  // The buffer bar only makes sense when exporting AND there's enough for the 5A min.
+  const showBar = exporting && canCharge;
+  row.style.display = showBar ? '' : 'none';
+  track.style.display = showBar ? '' : 'none';
+
+  if (exporting && canCharge) {
     const p = Math.round((exp / buf) * 100);
     bar.style.width = clampN(p, 0, 100) + '%';
     bar.style.background = p >= 100 ? '#30D158' : '#FFD60A';
     pct.textContent = p + '%';
-    pct.style.color = '';
     label.textContent = 'EXPORT vs BUFFER';
     const free = Math.max(0, exp - buf);
     sub.textContent = `exporting ${fmtW(exp)} W · ${fmtW(free)} W free for the car (≈${(free / volt).toFixed(1)} A)`;
+  } else if (exporting) {
+    sub.textContent = `exporting ${fmtW(exp)} W · not enough to charge (need ≥${minA}A)`;
   } else {
-    bar.style.width = '0%';
-    pct.textContent = '−' + fmtW(imp) + ' W';
-    pct.style.color = '#FF453A';
-    label.textContent = 'GRID IMPORT';
     sub.textContent = `importing ${fmtW(imp)} W from the grid — no solar surplus`;
   }
 }
@@ -128,16 +166,35 @@ function renderCards(s) {
     : (m ? `${fmtW(solarW)} W now` : '');
 
   const actual = comp?.actualAmps, commanded = comp?.commandedAmps ?? car?.chargeAmps;
-  $('chargeAmps').textContent = actual ?? commanded ?? (s.charging ? '?' : '0');
-  let cs = s.charging ? `${fmtW(comp?.chargeW)} W` : (s.wc && !s.wc.error && s.wc.connected ? 'plugged in' : (car?.chargingState || 'idle'));
-  if (comp?.throttled) cs = `set ${commanded}→${actual}A (V drop)`;
-  if (car?.batteryLevel != null) cs += ` · ${car.batteryLevel}%`;
-  if (s.wc && !s.wc.error && s.wc.sessionWh != null && s.charging) cs += ` · ${(s.wc.sessionWh / 1000).toFixed(1)} kWh`;
+  const volt = comp?.voltage || 230;
+  // What we COULD charge at from current surplus (no min clamp, so it can read 0).
+  const potential = comp ? clampN(Math.floor((comp.surplusW || 0) / volt), 0, comp.ampCeiling || 32) : 0;
+  let cs;
+  if (s.charging) {
+    $('chargeAmps').textContent = actual ?? commanded ?? '?';
+    cs = `${fmtW(comp?.chargeW)} W`;
+    if (comp?.throttled) cs = `set ${commanded}→${actual}A (V drop)`;
+    if (car?.batteryLevel != null) cs += ` · ${car.batteryLevel}%${car.chargeLimitSoc ? `→${car.chargeLimitSoc}%` : ''}`;
+    if (car?.timeToFull > 0) cs += ` · ${fmtEta(car.timeToFull)}`;
+    if (s.wc && !s.wc.error && s.wc.sessionWh != null) cs += ` · ${(s.wc.sessionWh / 1000).toFixed(1)} kWh`;
+  } else {
+    $('chargeAmps').textContent = 0;
+    const connected = (s.wc && !s.wc.error) ? s.wc.connected : car?.pluggedIn;
+    cs = connected ? 'plugged in' : 'unplugged';
+    cs += potential > 0 ? ` · could charge at ${potential}A from sun` : ' · no surplus';
+    if (car?.batteryLevel != null) cs += ` · ${car.batteryLevel}%`;
+  }
   $('chargeSub').textContent = cs;
 
   if (comp) {
-    $('targetAmps').textContent = comp.targetAmps;
-    $('targetSub').textContent = `surplus ${fmtW(comp.surplusW)} W`;
+    // Target reflects what the controller will actually command.
+    let targetVal, targetSub;
+    if (s.override) { targetVal = s.override.amps; targetSub = 'manual override'; }
+    else if (comp.scheduleActive) { targetVal = s.schedule?.amps ?? comp.targetAmps; targetSub = 'scheduled charge'; }
+    else if (comp.enoughToCharge) { targetVal = comp.targetAmps; targetSub = `surplus ${fmtW(comp.surplusW)} W`; }
+    else { targetVal = 0; targetSub = 'not enough sun'; }
+    $('targetAmps').textContent = targetVal;
+    $('targetSub').textContent = targetSub;
   }
   const gv = m?.channels?.grid;
   $('houseV').textContent = gv?.voltage ?? comp?.voltage ?? '–';
@@ -148,16 +205,27 @@ function renderMeters(s) {
   const m = s.meters; if (!m) return;
   const order = ['grid', 'solarPanels2', 'floor1', 'floor2'];
   const colors = { grid: '#f2f2f7', solarPanels2: '#FFD60A', floor1: '#0A84FF', floor2: '#BF5AF2' };
-  const rows = order.filter((k) => m.channels?.[k]).map((k, i, arr) => {
+  const items = order.filter((k) => m.channels?.[k]).map((k) => {
     const c = m.channels[k];
-    const neg = c.power < 0;
+    return { key: k, label: c.label, color: colors[k], power: c.power, voltage: c.voltage, current: c.current, pf: c.pf };
+  });
+  // SolaX (cloud) — generation shown negative; no AC voltage/current/PF in the cloud feed.
+  // Placed just above Growatt (solarPanels2).
+  if (s.solax && s.solax.ok && s.solax.acpower != null) {
+    const row = { label: 'SolaX', color: '#FF9F0A', power: -Math.max(0, s.solax.acpower), voltage: null, current: null, pf: null, cloud: true };
+    const gi = items.findIndex((it) => it.key === 'solarPanels2');
+    if (gi >= 0) items.splice(gi, 0, row); else items.push(row);
+  }
+  const rows = items.map((it, i, arr) => {
+    const neg = it.power < 0;
     const border = i < arr.length - 1 ? 'hairline-b' : '';
+    const cloudTag = it.cloud ? ' <span class="text-mut text-[10px] font-normal">cloud</span>' : '';
     return `<div class="grid grid-cols-6 py-3 items-center tnum text-[13.5px] ${border}">
-      <div class="col-span-2 flex items-center gap-2 font-medium"><span class="inline-block w-2 h-2 rounded-full" style="background:${colors[k]}"></span>${c.label}</div>
-      <div class="text-right font-semibold" style="color:${neg ? '#30D158' : '#f2f2f7'}">${neg ? '−' : ''}${fmtW(Math.abs(c.power))}</div>
-      <div class="text-right text-mut">${c.voltage ?? '–'}</div>
-      <div class="text-right text-mut">${c.current ?? '–'}</div>
-      <div class="text-right text-mut">${c.pf ?? '–'}</div>
+      <div class="col-span-2 flex items-center gap-2 font-medium"><span class="inline-block w-2 h-2 rounded-full" style="background:${it.color}"></span>${it.label}${cloudTag}</div>
+      <div class="text-right font-semibold" style="color:${neg ? '#30D158' : '#f2f2f7'}">${neg ? '−' : ''}${fmtW(Math.abs(it.power))}</div>
+      <div class="text-right text-mut">${it.voltage ?? '–'}</div>
+      <div class="text-right text-mut">${it.current ?? '–'}</div>
+      <div class="text-right text-mut">${it.pf ?? '–'}</div>
     </div>`;
   }).join('');
   $('metersBody').innerHTML = rows;
@@ -171,6 +239,93 @@ function renderControls(s) {
     if (s.charging) { btn.textContent = '■ Stop charge'; btn.className = TOGGLE_BASE + 'lg-btn-red'; btn.dataset.action = 'stop'; }
     else { btn.textContent = '▶ Start charge'; btn.className = TOGGLE_BASE + 'lg-btn-green'; btn.dataset.action = 'start'; }
   }
+
+  // Sync the slider to the server's auto-ceiling unless the user is dragging it.
+  const range = $('ovRange');
+  const dragging = document.activeElement === range || (range._touchedAt && Date.now() - range._touchedAt < 4000);
+  if (!dragging && s.maxAmps != null && Number(range.value) !== s.maxAmps) {
+    range.value = s.maxAmps;
+    $('ovVal').textContent = s.maxAmps;
+  }
+
+  // Schedule card (don't clobber inputs the user is editing).
+  const sc = s.schedule;
+  if (sc) {
+    const en = $('schedEnabled');
+    if (document.activeElement !== en) en.checked = !!sc.enabled;
+    for (const [id, val] of [['schedStart', sc.start], ['schedEnd', sc.end], ['schedAmps', sc.amps]]) {
+      const el = $(id);
+      if (el && document.activeElement !== el) el.value = val;
+    }
+    const active = s.computed?.scheduleActive;
+    $('schedSummary').textContent = sc.enabled
+      ? `${sc.start}–${sc.end} · ${sc.amps}A${active ? ' · active now' : ''}`
+      : 'off';
+  }
+
+  // Override controls reflect whether a manual hold is active.
+  const ov = s.override;
+  const apply = $('ovApply'), clear = $('ovClear'), lbl = $('ovLabel');
+  if (ov) {
+    apply.className = 'lg-btn lg-btn-blue flex-1';
+    apply.textContent = `Override ${ov.amps}A`;
+    clear.className = 'lg-btn lg-btn-soft flex-1';
+    clear.disabled = false;
+    clear.style.cssText = '';
+    if (lbl) lbl.textContent = 'Override active';
+  } else {
+    apply.className = 'lg-btn lg-btn-soft flex-1';
+    apply.textContent = 'Override';
+    clear.className = 'lg-btn lg-btn-ghost flex-1';
+    clear.disabled = true;
+    clear.style.cssText = 'opacity:.4;pointer-events:none;cursor:not-allowed';
+    if (lbl) lbl.textContent = 'Charge limit';
+  }
+}
+
+function renderDetail(s) {
+  const grid = $('detailGrid'); if (!grid) return;
+  const car = s.car || {}, wc = (s.wc && !s.wc.error) ? s.wc : {};
+  const C = (n) => (n == null ? null : `${Math.round(n)}°`);
+  const tiles = [];
+  const add = (k, v, u = '') => { if (v != null && v !== '' && v !== '–') tiles.push([k, v, u]); };
+
+  add('Cable temp', C(wc.handleTempC));
+  add('Charger temp', C(wc.pcbaTempC));
+  add('Cabin', C(car.insideTemp));
+  add('Outside', C(car.outsideTemp));
+  add('Battery', car.batteryLevel != null ? car.batteryLevel : null, '%');
+  add('Range', car.estRangeKm != null ? Math.round(car.estRangeKm) : null, 'km');
+  add('To full', s.charging && car.timeToFull > 0 ? fmtEta(car.timeToFull) : null);
+
+  if (!tiles.length) { grid.innerHTML = `<div class="text-mut text-[12px] col-span-3 px-1">No vehicle data yet.</div>`; return; }
+  grid.innerHTML = tiles.map(([k, v, u]) =>
+    `<div class="glass rounded-2xl p-3.5 flex flex-col gap-1">
+       <span class="text-[10px] font-semibold text-mut uppercase tracking-wider">${k}</span>
+       <span class="text-[15px] font-bold tnum">${v}<span class="text-[11px] font-normal text-mut"> ${u}</span></span>
+     </div>`).join('');
+}
+
+function renderWeather(s) {
+  const el = $('weather'); const w = s.weather;
+  if (w && w.ok && w.tempC != null) {
+    el.hidden = false;
+    el.className = 'flex items-center gap-3';
+    const name = weatherIconName(w.code);
+    const wColor = (name === 'sun' || name === 'cloudSun') ? '#FFD60A' : '#cfd6e6';
+    el.innerHTML =
+      `<span class="flex items-center gap-1" style="color:${wColor}">${icon(name, 16)}<span class="text-[12px]" style="color:#f2f2f7">${Math.round(w.tempC)}°</span></span>`
+      + `<span class="flex items-center gap-1 text-mut">${icon('cloud', 14)}<span class="text-[12px]">${Math.round(w.cloudCover)}%</span></span>`;
+    el.title = `${w.text} · feels ${Math.round(w.apparentC)}° · ${Math.round(w.radiation)} W/m² · wind ${Math.round(w.windKmh)} km/h`;
+  } else {
+    el.hidden = true;
+  }
+}
+
+function fmtEta(h) {
+  if (!h || h <= 0) return '';
+  const mins = Math.round(h * 60), hh = Math.floor(mins / 60), mm = mins % 60;
+  return hh ? `${hh}h${mm}m` : `${mm}m`;
 }
 
 function renderBanner(s) {
@@ -182,6 +337,8 @@ function renderBanner(s) {
     msgs.push('⚠ ' + s.lastError);
   }
   if (s.override) msgs.push(`Override: holding ${s.override.amps}A` + (s.override.expiresAt ? ` until ${new Date(s.override.expiresAt).toLocaleTimeString()}` : ''));
+  if (comp?.scheduleActive) msgs.push(`🌙 Scheduled charge active — charging from grid at ${s.schedule?.amps}A.`);
+  if (comp?.insufficientSolar) msgs.push('⛅ Charging stopped — not enough solar energy.');
   if (comp?.throttled) msgs.push(`⚡ Car throttling to ${comp.actualAmps}A (set ${comp.commandedAmps}A) — line voltage dropping under load.`);
   b.hidden = !msgs.length;
   b.innerHTML = msgs.join('<br>');
@@ -280,7 +437,7 @@ async function refreshStats() {
     ['Charge time', fmtDur(c.chargingMinutes), ''],
     ['Adjusts', c.adjustments || 0, ''],
     ['Home used', fmtKwh(h.usedWh), 'kWh'],
-    ['Solar gen', fmtKwh(h.solar2GeneratedWh), 'kWh'],
+    ['Solar gen', fmtKwh(h.solarGeneratedWh), 'kWh'],
     ['Exported', fmtKwh(h.exportedWh), 'kWh'],
     ['Imported', fmtKwh(h.importedWh), 'kWh'],
   ];
@@ -302,6 +459,17 @@ document.querySelectorAll('#rangeSeg button').forEach((b) => b.addEventListener(
   document.querySelectorAll('#rangeSeg button').forEach((x) => x.classList.toggle('active', x === b));
   refreshStats();
 }));
+function postSchedule() {
+  post('/api/schedule', {
+    enabled: $('schedEnabled').checked,
+    start: $('schedStart').value,
+    end: $('schedEnd').value,
+    amps: Number($('schedAmps').value),
+  });
+}
+['schedEnabled', 'schedStart', 'schedEnd', 'schedAmps'].forEach((id) =>
+  $(id).addEventListener('change', postSchedule));
+
 document.querySelectorAll('#chartRangeSeg button').forEach((b) => b.addEventListener('click', () => {
   chartHours = Number(b.dataset.hours);
   WINDOW_MS = chartHours * 3600_000;
@@ -311,7 +479,9 @@ document.querySelectorAll('#chartRangeSeg button').forEach((b) => b.addEventList
 // Keep longer ranges fresh (the 1h range stays live via the SSE stream).
 setInterval(() => { if (chartHours > 1) loadChartHistory(); }, 30000);
 
-$('ovRange').addEventListener('input', (e) => { $('ovVal').textContent = e.target.value; });
+$('ovRange').addEventListener('input', (e) => { $('ovVal').textContent = e.target.value; e.target._touchedAt = Date.now(); });
+// Releasing the slider sets the auto ceiling (auto charges between 5A and this value).
+$('ovRange').addEventListener('change', (e) => { post('/api/maxamps', { amps: Number(e.target.value) }); });
 $('ovApply').addEventListener('click', () => post('/api/override', { amps: Number($('ovRange').value) }));
 $('ovClear').addEventListener('click', () => post('/api/override/clear'));
 $('chargeToggle').addEventListener('click', () => charge($('chargeToggle').dataset.action || 'start'));
@@ -324,6 +494,12 @@ async function charge(action) {
 }
 
 // --- Boot -------------------------------------------------------------------
+// Inject the static card glyphs as iOS-style SVG icons.
+$('ic-solar').innerHTML = icon('sun', 20);
+$('ic-charge').innerHTML = icon('bolt', 20);
+$('ic-target').innerHTML = icon('target', 20);
+$('ic-volt').innerHTML = icon('gauge', 20);
+
 loadChartHistory();
 refreshStats();
 connect();

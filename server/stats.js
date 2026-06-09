@@ -55,15 +55,19 @@ export function getStats(range = 'today') {
     carSolarWh += (cw - gridShare) * dtH;
   }
 
+  // Total solar generation = Growatt clamp (generation is negative) + SolaX cloud.
+  const solaxWh = integrate(rows, (r) => Math.max(0, r.solax_w || 0));
+  const solarGenWh = solar2Wh + solaxWh;
+
   // Estimated whole-home consumption via energy balance at the grid meter:
-  //   consumption = generation + grid_power  (grid_power: + import, - export)
-  // generation is best-effort: Growatt clamp + any solar visible on floor1.
+  //   consumption = total_generation + grid_power   (grid_power: + import, - export)
+  // Both arrays sit behind the main grid meter, so this nets out correctly.
   let usedWh = 0;
   for (let i = 1; i < rows.length; i++) {
     const dtH = (rows[i].ts - rows[i - 1].ts) / 3_600_000;
     if (dtH <= 0 || dtH > 0.5) continue;
     const r = rows[i - 1];
-    const gen = -Math.min(0, r.solar2_w || 0) + -Math.min(0, r.floor1_w || 0);
+    const gen = -Math.min(0, r.solar2_w || 0) + Math.max(0, r.solax_w || 0);
     const cons = Math.max(0, gen + (r.grid_power || 0));
     usedWh += cons * dtH;
   }
@@ -101,7 +105,9 @@ export function getStats(range = 'today') {
       adjustments,
     },
     home: {
-      solar2GeneratedWh: round0(solar2Wh),
+      solarGeneratedWh: round0(solarGenWh), // Growatt + SolaX
+      growattWh: round0(solar2Wh),
+      solaxWh: round0(solaxWh),
       exportedWh: round0(exportWh),
       importedWh: round0(importWh),
       usedWh: round0(usedWh),
@@ -140,6 +146,7 @@ export function getSeries(hours = 1) {
       chargeW: r.charge_w,
       solar2W: r.solar2_w,
       floor1W: r.floor1_w,
+      solaxW: r.solax_w,
       chargeAmps: r.charge_amps,
     });
   }

@@ -27,7 +27,9 @@ export async function readVitals() {
       sessionWh: v.session_energy_wh,
       sessionS: v.session_s,
       gridHz: v.grid_hz,
-      handleTempC: v.handle_temp_c,
+      handleTempC: v.handle_temp_c, // cable handle temperature
+      pcbaTempC: v.pcba_temp_c, // charger electronics temperature
+      mcuTempC: v.mcu_temp_c,
       evseState: v.evse_state,
     };
   } catch (e) {

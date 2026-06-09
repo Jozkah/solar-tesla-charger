@@ -1,0 +1,19 @@
+{
+  "name": "solar-tesla-charger",
+  "version": "1.0.0",
+  "description": "Solar-aware Tesla charging dashboard driven by two Shelly EM (Gen1) meters",
+  "type": "module",
+  "main": "server/index.js",
+  "scripts": {
+    "start": "node server/index.js",
+    "dev": "node --watch server/index.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "undici": "^6.26.0"
+  }
+}

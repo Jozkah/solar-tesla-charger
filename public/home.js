@@ -238,8 +238,8 @@ function renderChart(hoverIndex) {
     series.forEach((p, i) => { const x = X(i), y = Y(p[key]); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
     ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.lineJoin = 'round'; ctx.stroke();
   };
-  drawSeries('sol', '#FFD60A', 'rgba(255,214,10,.10)');
-  drawSeries('exp', '#30D158', 'rgba(48,209,88,.10)');
+  drawSeries('sol', '#fbbf24', 'rgba(251,191,36,.10)');
+  drawSeries('exp', '#34d399', 'rgba(52,211,153,.10)');
   drawSeries('imp', '#FF453A', 'rgba(255,69,58,.10)');
   ctx.fillStyle = '#9a9aa2';
   ctx.textAlign = 'left'; ctx.fillText(hhmm(new Date(series[0].ts)), padL, cssH - 5);
@@ -249,14 +249,14 @@ function renderChart(hoverIndex) {
     const hx = X(hoverIndex), p = series[hoverIndex];
     ctx.strokeStyle = 'rgba(255,255,255,.35)'; ctx.lineWidth = 1;
     ctx.beginPath(); ctx.moveTo(hx, padT); ctx.lineTo(hx, padT + H); ctx.stroke();
-    for (const [k, c] of [['sol', '#FFD60A'], ['exp', '#30D158'], ['imp', '#FF453A']]) {
+    for (const [k, c] of [['sol', '#fbbf24'], ['exp', '#34d399'], ['imp', '#FF453A']]) {
       ctx.fillStyle = c; ctx.beginPath(); ctx.arc(hx, Y(p[k]), 3, 0, Math.PI * 2); ctx.fill();
     }
     if (tip) {
       tip.hidden = false;
       tip.innerHTML = `<div class="t-time">${hhmm(new Date(p.ts))}</div>`
-        + `<div class="t-row"><i style="background:#30D158"></i>Export ${fmtW(p.exp)} W</div>`
-        + `<div class="t-row"><i style="background:#FFD60A"></i>Solar ${fmtW(p.sol)} W</div>`
+        + `<div class="t-row"><i style="background:#34d399"></i>Export ${fmtW(p.exp)} W</div>`
+        + `<div class="t-row"><i style="background:#fbbf24"></i>Solar ${fmtW(p.sol)} W</div>`
         + `<div class="t-row"><i style="background:#FF453A"></i>Import ${fmtW(p.imp)} W</div>`;
       tip.style.left = Math.max(46, Math.min(cssW - 46, hx)) + 'px';
     }

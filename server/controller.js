@@ -343,8 +343,8 @@ async function controlCycle() {
     const haveSurplusToStart = d.surplusW >= C.minAmps * d.voltage - C.resumeMarginWatts;
 
     if (!eff && C.stopWhenInsufficient && !haveSurplusToStart) {
-      if (d.isCharging) action = await safeCmd('stop charge (insufficient surplus)', () => tesla.chargeStop());
-      else action = 'idle (insufficient surplus)';
+      if (d.isCharging) action = await safeCmd('stop charge (not enough sun)', () => tesla.chargeStop());
+      else action = 'idle (not enough sun)';
     } else {
       if (!d.isCharging && (eff || haveSurplusToStart)) {
         await safeCmd('start charge', () => tesla.chargeStart());

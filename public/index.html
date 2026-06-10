@@ -26,8 +26,10 @@
   body { background:#050505; color:#f2f2f7; font-family:'Inter',-apple-system,BlinkMacSystemFont,sans-serif; -webkit-font-smoothing:antialiased; min-height:100dvh; overscroll-behavior-y:none; }
   /* Clear the status bar / notch when added to the Home Screen (standalone PWA). */
   header { padding-top: env(safe-area-inset-top); }
-  /* iOS 26 "Liquid Glass" surface: translucent, blurred, vibrant, with a top specular highlight */
-  .glass { background:rgba(22,23,28,0.55); backdrop-filter:blur(26px) saturate(160%); -webkit-backdrop-filter:blur(26px) saturate(160%); border:1px solid rgba(255,255,255,0.10); box-shadow: inset 0 1px 0 rgba(255,255,255,.12), 0 10px 30px rgba(0,0,0,.38); }
+  /* iOS 26 "Liquid Glass" surface — solid (no backdrop-filter): over the near-black
+     background the blur was barely visible, and removing it kills the Chromium
+     scroll "streak" where tiles smear the fixed glow. */
+  .glass { background:rgba(26,27,32,0.9); border:1px solid rgba(255,255,255,0.10); box-shadow: inset 0 1px 0 rgba(255,255,255,.12), 0 10px 30px rgba(0,0,0,.38); }
   /* Solid card (no backdrop-filter) for the chart — avoids the Chromium backdrop
      repaint streak that shows at the top edge when the hover tooltip updates. */
   .chart-card { background:rgba(20,21,26,0.92); border:1px solid rgba(255,255,255,0.10); box-shadow: inset 0 1px 0 rgba(255,255,255,.12), 0 10px 30px rgba(0,0,0,.38); }
@@ -36,7 +38,7 @@
   ::-webkit-scrollbar { display:none; }
 
   /* iOS 26 segmented control — glass track with a floating glass selection pill */
-  .seg { display:flex; gap:3px; padding:3px; background:rgba(120,120,128,0.16); border-radius:16px; border:1px solid rgba(255,255,255,0.06); -webkit-backdrop-filter:blur(16px); backdrop-filter:blur(16px); box-shadow: inset 0 1px 0 rgba(255,255,255,.06); }
+  .seg { display:flex; gap:3px; padding:3px; background:rgba(120,120,128,0.16); border-radius:16px; border:1px solid rgba(255,255,255,0.06); box-shadow: inset 0 1px 0 rgba(255,255,255,.06); }
   .seg button { flex:1; border:0; background:transparent; color:rgba(235,235,245,0.6); font-size:13px; font-weight:600; padding:8px 6px; border-radius:13px; transition:.2s cubic-bezier(.32,.72,0,1); cursor:pointer; }
   .seg button.active { background:linear-gradient(180deg, rgba(255,255,255,.22), rgba(255,255,255,.10)); color:#fff; border:1px solid rgba(255,255,255,.14); box-shadow: inset 0 1px 0 rgba(255,255,255,.45), 0 2px 8px rgba(0,0,0,.40); }
 
@@ -91,7 +93,7 @@
     <div class="flex flex-col items-end gap-1.5">
       <div id="conn" class="flex items-center gap-2 px-3 py-1.5 rounded-full bg-ios-green/15">
         <span id="connDot" class="w-2 h-2 rounded-full bg-ios-green dot-live"></span>
-        <span id="connText" class="text-ios-green text-xs font-semibold">Live</span>
+        <span id="connText" class="text-ios-green text-xs font-semibold">live</span>
       </div>
       <div id="weather" class="text-[12px] text-mut tnum" hidden></div>
     </div>

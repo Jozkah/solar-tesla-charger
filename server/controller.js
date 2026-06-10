@@ -396,7 +396,7 @@ async function runControl() {
 }
 // Fire-and-forget control cycle for UI actions that want an immediate effect.
 function kickControl() {
-  runControl().catch((e) => { state.lastError = String(e.message || e); });
+  runControl().catch((e) => { state.lastError = String(e?.message || e); });
 }
 
 // --- Helpers ---------------------------------------------------------------
@@ -443,18 +443,21 @@ function bumpAdjustments() {
 async function safeCmd(label, fn) {
   try {
     const r = await fn();
+    // A command went through — clear any stale command error so the banner
+    // doesn't show a transient failure (e.g. a brief asleep 408) forever.
+    if (state.lastError && state.lastError.startsWith('cmd ')) state.lastError = null;
     return r?.dryRun ? `[dry-run] ${label}` : label;
   } catch (err) {
-    state.lastError = `cmd ${label}: ${err.message}`;
+    state.lastError = `cmd ${label}: ${err?.message || err}`;
     return `failed: ${label}`;
   }
 }
 
 export function start() {
   if (timers.length) return;
-  const live = () => liveCycle().catch((e) => { state.lastError = String(e.message || e); });
-  const ctrl = () => runControl().catch((e) => { state.lastError = String(e.message || e); });
-  const car = () => carCycle().catch((e) => { state.lastError = String(e.message || e); });
+  const live = () => liveCycle().catch((e) => { state.lastError = String(e?.message || e); });
+  const ctrl = () => runControl().catch((e) => { state.lastError = String(e?.message || e); });
+  const car = () => carCycle().catch((e) => { state.lastError = String(e?.message || e); });
   live();
   setTimeout(car, 1500); // first car read shortly after meters
   setTimeout(ctrl, 2500); // let meters + car populate first

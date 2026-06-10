@@ -219,7 +219,10 @@ async function proxyCommand(command, payload) {
       return json;
     } catch (err) { lastErr = err; await sleep(1500); }
   }
-  throw lastErr;
+  // If every attempt hit the 408 (asleep) path, lastErr is never set — throw a
+  // real Error so callers don't crash on `err.message` (and the car simply
+  // retries on the next control tick once it has woken).
+  throw lastErr || new Error(`${command}: vehicle unavailable (HTTP 408, asleep/offline) after ${(t.commandRetries ?? 1) + 1} attempts`);
 }
 async function proxyWake() {
   if (config.control.dryRun) return { dryRun: true, command: 'wake_up' };
@@ -246,7 +249,7 @@ async function fleetCommand(command, payload) {
       return json;
     } catch (err) { lastErr = err; await sleep(1500); }
   }
-  throw lastErr;
+  throw lastErr || new Error(`${command}: vehicle unavailable (HTTP 408, asleep/offline) after ${(t.commandRetries ?? 1) + 1} attempts`);
 }
 async function fleetWake() {
   if (config.control.dryRun) return { dryRun: true, command: 'wake_up' };

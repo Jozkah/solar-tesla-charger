@@ -106,7 +106,6 @@ function handleState(s) {
   setConn(s.dryRun ? 'ok live' : 'ok live', s.dryRun ? 'dry-run' : 'live');
   renderHero(s);
   renderCards(s);
-  renderMeters(s);
   renderControls(s);
   renderWeather(s);
   renderDetail(s);
@@ -199,36 +198,6 @@ function renderCards(s) {
   const gv = m?.channels?.grid;
   $('houseV').textContent = gv?.voltage ?? comp?.voltage ?? '–';
   $('houseVSub').textContent = gv?.pf != null ? `PF ${gv.pf}` : '';
-}
-
-function renderMeters(s) {
-  const m = s.meters; if (!m) return;
-  const order = ['grid', 'solarPanels2', 'floor1', 'floor2'];
-  const colors = { grid: '#f2f2f7', solarPanels2: '#FFD60A', floor1: '#0A84FF', floor2: '#BF5AF2' };
-  const items = order.filter((k) => m.channels?.[k]).map((k) => {
-    const c = m.channels[k];
-    return { key: k, label: c.label, color: colors[k], power: c.power, voltage: c.voltage, current: c.current, pf: c.pf };
-  });
-  // SolaX (cloud) — generation shown negative; no AC voltage/current/PF in the cloud feed.
-  // Placed just above Growatt (solarPanels2).
-  if (s.solax && s.solax.ok && s.solax.acpower != null) {
-    const row = { label: 'SolaX', color: '#FF9F0A', power: -Math.max(0, s.solax.acpower), voltage: null, current: null, pf: null, cloud: true };
-    const gi = items.findIndex((it) => it.key === 'solarPanels2');
-    if (gi >= 0) items.splice(gi, 0, row); else items.push(row);
-  }
-  const rows = items.map((it, i, arr) => {
-    const neg = it.power < 0;
-    const border = i < arr.length - 1 ? 'hairline-b' : '';
-    const cloudTag = it.cloud ? ' <span class="text-mut text-[10px] font-normal">cloud</span>' : '';
-    return `<div class="grid grid-cols-6 py-3 items-center tnum text-[13.5px] ${border}">
-      <div class="col-span-2 flex items-center gap-2 font-medium"><span class="inline-block w-2 h-2 rounded-full" style="background:${it.color}"></span>${it.label}${cloudTag}</div>
-      <div class="text-right font-semibold" style="color:${neg ? '#30D158' : '#f2f2f7'}">${neg ? '−' : ''}${fmtW(Math.abs(it.power))}</div>
-      <div class="text-right text-mut">${it.voltage ?? '–'}</div>
-      <div class="text-right text-mut">${it.current ?? '–'}</div>
-      <div class="text-right text-mut">${it.pf ?? '–'}</div>
-    </div>`;
-  }).join('');
-  $('metersBody').innerHTML = rows;
 }
 
 const TOGGLE_BASE = 'lg-btn w-full py-4 text-[17px] ';

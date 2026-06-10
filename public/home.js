@@ -36,6 +36,8 @@ function stopPolling() { if (pollTimer) { clearInterval(pollTimer); pollTimer = 
 function handleState(s) {
   setConn(true, 'live');
   renderEnergy(s);
+  renderSolarPanels(s);
+  renderMeters(s);
   renderPlugs(s);
   renderCamStatus(s);
 }
@@ -61,6 +63,72 @@ function renderEnergy(s) {
   const gl = $('gridLabel');
   gl.textContent = exporting ? 'exporting' : 'importing';
   gl.style.color = exporting ? '#30D158' : '#FF453A';
+}
+
+// --- Per-panel solar breakdown (live) ---------------------------------------
+function renderSolarPanels(s) {
+  const wrap = $('solarPanels'), body = $('solarPanelsBody');
+  if (!wrap || !body) return;
+  const m = s.meters;
+  if (!m) { wrap.hidden = true; return; }
+
+  const panels = [];
+  // SolaX (cloud) — generation reported as positive acpower.
+  if (s.solax && s.solax.ok && s.solax.acpower != null) {
+    panels.push({ label: 'SolaX', color: '#FF9F0A', power: Math.max(0, s.solax.acpower), cloud: true });
+  }
+  // Growatt (solarPanels2) — negative = generation.
+  if (m.solarPanels2 != null && m.solarPanels2 < 0) {
+    panels.push({ label: 'Growatt', color: '#FFD60A', power: -m.solarPanels2 });
+  }
+  // solarPanel1 → floor1 channel injection — negative power = generation.
+  const f1 = m.channels?.floor1?.power;
+  if (f1 != null && f1 < 0) {
+    panels.push({ label: 'Solar panel 1', color: '#30D158', power: -f1 });
+  }
+
+  if (!panels.length) { wrap.hidden = true; body.innerHTML = ''; return; }
+  wrap.hidden = false;
+  body.innerHTML = panels.map((p, i, arr) => {
+    const border = i < arr.length - 1 ? 'hairline-b' : '';
+    const cloudTag = p.cloud ? ' <span class="text-mut text-[10px] font-normal">cloud</span>' : '';
+    return `<div class="grid grid-cols-3 py-2.5 items-center tnum text-[13.5px] ${border}">
+      <div class="col-span-2 flex items-center gap-2 font-medium"><span class="inline-block w-2 h-2 rounded-full" style="background:${p.color}"></span>${p.label}${cloudTag}</div>
+      <div class="text-right font-semibold text-ios-amber">${fmtW(p.power)}<span class="text-mut text-[11px] font-normal ml-0.5">W</span></div>
+    </div>`;
+  }).join('');
+}
+
+// --- House per-circuit meters (ported from the Tesla view) -------------------
+function renderMeters(s) {
+  const body = $('metersBody');
+  if (!body) return;
+  const m = s.meters; if (!m) return;
+  const order = ['grid', 'solarPanels2', 'floor1', 'floor2'];
+  const colors = { grid: '#f2f2f7', solarPanels2: '#FFD60A', floor1: '#0A84FF', floor2: '#BF5AF2' };
+  const items = order.filter((k) => m.channels?.[k]).map((k) => {
+    const c = m.channels[k];
+    return { key: k, label: c.label, color: colors[k], power: c.power, voltage: c.voltage, current: c.current, pf: c.pf };
+  });
+  // SolaX (cloud) — generation shown negative; no AC voltage/current/PF in the cloud feed.
+  // Placed just above Growatt (solarPanels2).
+  if (s.solax && s.solax.ok && s.solax.acpower != null) {
+    const row = { label: 'SolaX', color: '#FF9F0A', power: -Math.max(0, s.solax.acpower), voltage: null, current: null, pf: null, cloud: true };
+    const gi = items.findIndex((it) => it.key === 'solarPanels2');
+    if (gi >= 0) items.splice(gi, 0, row); else items.push(row);
+  }
+  body.innerHTML = items.map((it, i, arr) => {
+    const neg = it.power < 0;
+    const border = i < arr.length - 1 ? 'hairline-b' : '';
+    const cloudTag = it.cloud ? ' <span class="text-mut text-[10px] font-normal">cloud</span>' : '';
+    return `<div class="grid grid-cols-6 py-3 items-center tnum text-[13.5px] ${border}">
+      <div class="col-span-2 flex items-center gap-2 font-medium"><span class="inline-block w-2 h-2 rounded-full" style="background:${it.color}"></span>${it.label}${cloudTag}</div>
+      <div class="text-right font-semibold" style="color:${neg ? '#30D158' : '#f2f2f7'}">${neg ? '−' : ''}${fmtW(Math.abs(it.power))}</div>
+      <div class="text-right text-mut">${it.voltage ?? '–'}</div>
+      <div class="text-right text-mut">${it.current ?? '–'}</div>
+      <div class="text-right text-mut">${it.pf ?? '–'}</div>
+    </div>`;
+  }).join('');
 }
 
 // --- Smart plugs ------------------------------------------------------------

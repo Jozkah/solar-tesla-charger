@@ -478,18 +478,21 @@ function bumpAdjustments() {
 async function safeCmd(label, fn) {
   try {
     const r = await fn();
+    // A command went through — clear any stale command error so the banner
+    // doesn't show a transient failure (e.g. a brief asleep 408) forever.
+    if (state.lastError && state.lastError.startsWith('cmd ')) state.lastError = null;
     return r?.dryRun ? `[dry-run] ${label}` : label;
   } catch (err) {
-    state.lastError = `cmd ${label}: ${err.message}`;
+    state.lastError = `cmd ${label}: ${err?.message || err}`;
     return `failed: ${label}`;
   }
 }
 
 export function start() {
   if (timers.length) return;
-  const live = () => liveCycle().catch((e) => { state.lastError = String(e.message || e); });
-  const ctrl = () => controlCycle().catch((e) => { state.lastError = String(e.message || e); });
-  const car = () => carCycle().catch((e) => { state.lastError = String(e.message || e); });
+  const live = () => liveCycle().catch((e) => { state.lastError = String(e?.message || e); });
+  const ctrl = () => controlCycle().catch((e) => { state.lastError = String(e?.message || e); });
+  const car = () => carCycle().catch((e) => { state.lastError = String(e?.message || e); });
   const camStatus = () => cameras.refreshStatus().catch(() => {}); // home dashboard reachability
   live();
   camStatus();

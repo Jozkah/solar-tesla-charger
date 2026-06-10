@@ -205,8 +205,16 @@ function clamp(n, lo, hi) {
 // source for actual current / voltage / charging+plugged state when available.
 function computeDecision(meters, car, wc) {
   const wcOk = wc && !wc.error;
-  const isCharging = wcOk ? wc.charging : car?.chargingState === 'Charging';
+  // Trust the car's own charging state; fall back to the Wall Connector only at a
+  // real charge rate (>= min amps). A plugged-in car pulls a few amps of standby/
+  // conditioning power (battery heat/cool, cabin preheat, Sentry) that keeps the WC
+  // contactor closed and otherwise looks like a charge.
+  const wcCurrent = wcOk ? (wc.currentA || 0) : 0;
+  const isCharging = car?.chargingState === 'Charging'
+    || (wcOk && wc.charging && wcCurrent >= (C.minAmps - 0.5));
   const connected = wcOk ? wc.connected : !!car?.pluggedIn;
+  // Plugged in, not charging, but still drawing power = conditioning / Sentry / standby.
+  const standbyW = connected && !isCharging && wcOk && wc.power > 100 ? Math.round(wc.power) : 0;
   const voltage = pickVoltage(meters, car, wc);
   const actualAmps = (wcOk ? wc.currentA : car?.chargerActualCurrent) ?? null;
   const chargeW = wcOk && wc.power != null ? wc.power : computeChargeW(car, voltage);
@@ -224,7 +232,7 @@ function computeDecision(meters, car, wc) {
     isCharging && actualAmps != null && commandedAmps != null &&
     commandedAmps - actualAmps >= 2 && voltage > 0 && voltage < (C.throttleVoltage || 217);
   const enoughToCharge = surplusW >= C.minAmps * voltage - C.resumeMarginWatts;
-  return { voltage, chargeW, isCharging, connected, surplusW, ampCeiling, targetAmps, actualAmps, commandedAmps, throttled, enoughToCharge };
+  return { voltage, chargeW, isCharging, connected, surplusW, ampCeiling, targetAmps, actualAmps, commandedAmps, throttled, enoughToCharge, standbyW };
 }
 
 function setComputed(meters, d) {
@@ -254,6 +262,7 @@ function setComputed(meters, d) {
     potentialAmps,
     solarCouldChargeFaster,
     enoughToCharge: d.enoughToCharge,
+    standbyW: d.standbyW, // conditioning/Sentry draw while plugged in but not charging
     // True when the car is plugged in on auto but charging is held off because
     // the solar surplus can't sustain the minimum amperage.
     insufficientSolar: !!(d.connected && C.stopWhenInsufficient && state.mode === 'auto'

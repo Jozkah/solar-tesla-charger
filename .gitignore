@@ -1,5 +1,7 @@
 node_modules/
 data/
 .env
+# Real deployment config (your IPs / device map). Copy config.json.example -> config.json.
+config.json
 *.log
 .DS_Store

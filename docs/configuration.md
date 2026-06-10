@@ -2,12 +2,13 @@
 
 Two files configure the app:
 
-- **`config.json`** — all **non-secret** settings, committed to the repo. This includes
-  device IPs (meters, Wall Connector, cameras, plugs), which are local-LAN addresses,
-  not secrets.
-- **`.env`** — **secrets only** (tokens, API keys, account passwords). Gitignored;
-  copy `.env.example` to `.env` and fill in. Merging happens in `server/config.js`,
-  where `.env` values override the matching `config.json` keys.
+- **`config.json`** — your settings and device map (meter/Wall Connector/camera/plug
+  IPs, channel map, limits, poll intervals). **Gitignored** — it describes your LAN, so
+  it isn't committed. Copy `config.json.example` to `config.json` and edit it.
+- **`.env`** — **secrets + home location** (tokens, API keys, account passwords, and
+  `WEATHER_LAT`/`WEATHER_LON`). Gitignored; copy `.env.example` to `.env` and fill in.
+  Merging happens in `server/config.js`, where `.env` values override matching
+  `config.json` keys.
 
 This doc focuses on the **home-dashboard** blocks (`cameras`, `kasa`, `weather`). The
 base-charger blocks (`shelly`, `wallconnector`, `solax`, `control`, `tesla`, `notify`,

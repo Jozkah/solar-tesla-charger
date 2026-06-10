@@ -280,9 +280,10 @@ available). WMO weather codes are mapped to an emoji icon + label. Served at
 **Requirements:** Node.js **≥ 18** (uses built-in `node:sqlite` and native `fetch`).
 
 ```bash
-npm install            # installs express, undici, dotenv, tplink-smarthome-api, tp-link-tapo-connect
-cp .env.example .env   # then fill in your values (credentials only)
-npm start              # serves on http://0.0.0.0:3000 (config.json server.port/host)
+npm install                       # installs express, undici, dotenv, tplink-smarthome-api, tp-link-tapo-connect
+cp config.json.example config.json # then edit your device IPs / channel map / lists
+cp .env.example .env              # then fill in your values (credentials + WEATHER_LAT/LON)
+npm start                         # serves on http://0.0.0.0:3000 (config.json server.port/host)
 ```
 
 Open `http://<this-machine-LAN-IP>:3000` on your phone (same Wi-Fi); it lands on the
@@ -290,9 +291,9 @@ home dashboard. Allow inbound TCP 3000 through the firewall for LAN access.
 
 What goes where:
 
-- **`config.json`** — all non-secret settings, including the **camera and plug lists**.
-  Camera oids and plug IPs are local-LAN values, not secrets, so they live here. Edit
-  the `cameras` and `kasa` blocks for your setup (see the reference below).
+- **`config.json`** — your device map and settings (IPs, channel map, camera/plug
+  lists, limits). **Gitignored** — it holds your LAN layout, so it's not committed;
+  copy `config.json.example` and edit it for your setup (see the reference below).
 - **`.env`** — credentials only. Copy `.env.example` and fill in. Never commit it
   (it's gitignored). For the home dashboard you generally only need:
   - `TAPO_EMAIL` / `TAPO_PASSWORD` — **required if you have any Tapo plugs**.
@@ -417,7 +418,9 @@ IP (and your camera/plug links and Shortcuts) don't break.
 
 - `.env` (Tesla tokens, SolaX keys, TP-Link account password, Agent DVR login, push
   tokens) is **gitignored** — keep it that way.
-- Camera oids and device IPs in `config.json` are **local-LAN values, not secrets**.
+- `config.json` (your device IPs, channel map, coordinates were here) is **gitignored** —
+  only `config.json.example` (placeholders) is committed. Home coordinates live in `.env`
+  (`WEATHER_LAT`/`WEATHER_LON`), never in the tracked config.
 - The dashboards and REST API have **no authentication** and the camera proxy will
   stream anything Agent DVR exposes — expose them on your **LAN only**. For remote
   access use a VPN / Tailscale, never a public port-forward.

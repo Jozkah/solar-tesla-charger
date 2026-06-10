@@ -11,6 +11,11 @@ drives Apple Shortcuts.
 > **Local-first & private.** All credentials live in a gitignored `.env`. The dashboard
 > and API have **no authentication** — run them on your LAN only.
 
+## Screenshots
+
+<!-- Add screenshots to docs/screenshots/ (drag-drop works in GitHub's README editor). -->
+![Solar-aware Tesla charging dashboard](docs/screenshots/charger.png)
+
 ---
 
 ## Table of contents

@@ -84,8 +84,8 @@ Each `kasa.plugs[]` entry:
 "weather": {
   "enabled": true,
   "pollMin": 10,
-  "lat": 0.0,
-  "lon": 0.0,
+  "lat": null,
+  "lon": null,
   "timeoutMs": 8000
 }
 ```
@@ -95,7 +95,7 @@ Each `kasa.plugs[]` entry:
 | `enabled` | bool | `true` | Master switch. Set `false` to disable the weather card/endpoint. |
 | `pollMin` | number | `10` | Minutes between current-conditions refreshes. |
 | `forecastMin` | number | `30` | Minutes between forecast refreshes (not in the default file; falls back to 30). |
-| `lat` / `lon` | number | – | Location for Open-Meteo. The car's live location is used instead when available. |
+| `lat` / `lon` | number | `null` | Location for Open-Meteo. **Keep these `null` in `config.json` (it's your home address) and set `WEATHER_LAT` / `WEATHER_LON` in `.env` instead.** The car's live location is used when unset. |
 | `timeoutMs` | number | `8000` | Open-Meteo request timeout. |
 
 Open-Meteo needs **no API key**.

@@ -67,6 +67,14 @@ export const config = {
     tokenId: process.env.SOLAX_TOKEN_ID || '',
     wifiSn: process.env.SOLAX_WIFI_SN || '',
   },
+  // Home location for the weather forecast. Kept OUT of the tracked config.json
+  // (it's your home address) — set WEATHER_LAT / WEATHER_LON in .env. Falls back
+  // to the car's GPS location when unset.
+  weather: {
+    ...(fileConfig.weather || {}),
+    lat: process.env.WEATHER_LAT ? Number(process.env.WEATHER_LAT) : fileConfig.weather?.lat ?? null,
+    lon: process.env.WEATHER_LON ? Number(process.env.WEATHER_LON) : fileConfig.weather?.lon ?? null,
+  },
   notify: {
     ...(fileConfig.notify || {}),
     channel: process.env.NOTIFY_CHANNEL || fileConfig.notify?.channel || 'auto',

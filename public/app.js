@@ -150,7 +150,7 @@ function renderHero(s) {
   } else if (exporting) {
     sub.textContent = `exporting ${fmtW(exp)} W · not enough to charge (need ≥${minA}A)`;
   } else {
-    sub.textContent = `importing ${fmtW(imp)} W from the grid — no solar surplus`;
+    sub.textContent = `importing ${fmtW(imp)} W from the grid — not enough sun`;
   }
 }
 
@@ -186,7 +186,7 @@ function renderCards(s) {
       // conditioning or Sentry — show it so the draw is accounted for, not "charging".
       cs += ` · ❄️ conditioning, drawing ${fmtW(standbyW)} W`;
     } else {
-      cs += potential > 0 ? ` · could charge at ${potential}A from sun` : ' · no surplus';
+      cs += potential > 0 ? ` · could charge at ${potential}A from sun` : ' · not enough sun';
     }
     if (car?.batteryLevel != null) cs += ` · ${car.batteryLevel}%`;
   }
@@ -197,7 +197,7 @@ function renderCards(s) {
     let targetVal, targetSub;
     if (s.override) { targetVal = s.override.amps; targetSub = 'manual override'; }
     else if (comp.scheduleActive) { targetVal = s.schedule?.amps ?? comp.targetAmps; targetSub = 'scheduled charge'; }
-    else if (comp.enoughToCharge) { targetVal = comp.targetAmps; targetSub = `surplus ${fmtW(comp.surplusW)} W`; }
+    else if (comp.enoughToCharge) { targetVal = comp.targetAmps; targetSub = `${fmtW(comp.surplusW)} W from sun`; }
     else { targetVal = 0; targetSub = 'not enough sun'; }
     $('targetAmps').textContent = targetVal;
     $('targetSub').textContent = targetSub;

@@ -35,6 +35,8 @@ export const state = {
   override: null, // { amps, expiresAt }
   schedule: { enabled: false, start: '00:00', end: '07:00', amps: C.maxAmps }, // overnight grid charge
   maxAmps: C.maxAmps, // user-set auto ceiling (5..config.maxAmps)
+  allowLimitIncrease: false, // opportunistically raise the SoC limit to soak up free solar
+  limitBoosted: false, // true while we're holding the car's SoC limit above the user's setting
   lastCycleAt: 0, // last control-loop tick
   liveAt: 0, // last live-loop tick
   lastAction: 'starting',
@@ -54,6 +56,8 @@ export const state = {
 
 let session = null;
 let lastSetAmps = null;
+let savedChargeLimit = null; // the user's real SoC limit, stashed while boosted
+let boostIdleSince = 0; // when free solar first dropped while boosted (revert grace timer)
 let timers = [];
 
 // Charging start/stop event detection + a small queue the Apple Shortcut drains.
@@ -159,6 +163,36 @@ export function setMaxAmps(amps) {
   state.maxAmps = clamp(Math.round(amps), C.minAmps, C.maxAmps);
   emit();
   return state.maxAmps;
+}
+
+// --- Opportunistic battery-limit increase ----------------------------------
+// When there's free solar beyond the user's SoC limit, raise the limit to 100%
+// so the surplus tops the battery up for free, then restore the user's limit
+// when the sun (or the feature) goes away. Persisted so a restart while boosted
+// can still revert. Tesla's minimum settable SoC limit is 50%.
+const BOOST_FILE = path.join(config.paths.root, 'data', 'boost.json');
+const BOOST_REVERT_DELAY_MS = 5 * 60_000; // ride out passing clouds before reverting
+(function loadBoost() {
+  try {
+    const b = JSON.parse(fs.readFileSync(BOOST_FILE, 'utf8'));
+    if (b && typeof b === 'object') {
+      state.allowLimitIncrease = !!b.allowLimitIncrease;
+      savedChargeLimit = typeof b.savedChargeLimit === 'number' ? b.savedChargeLimit : null;
+      state.limitBoosted = savedChargeLimit != null;
+    }
+  } catch { /* none yet */ }
+})();
+function persistBoost() {
+  try {
+    fs.mkdirSync(path.dirname(BOOST_FILE), { recursive: true });
+    fs.writeFileSync(BOOST_FILE, JSON.stringify({ allowLimitIncrease: state.allowLimitIncrease, savedChargeLimit }, null, 2));
+  } catch { /* best effort */ }
+}
+export function setAllowLimitIncrease(on) {
+  state.allowLimitIncrease = !!on;
+  persistBoost();
+  emit();
+  return state.allowLimitIncrease;
 }
 export async function manualCharge(action) {
   if (action === 'start') return tesla.chargeStart();
@@ -277,6 +311,50 @@ async function carCycle() {
   }
 }
 
+// Raise/restore the car's SoC limit to capture free solar past the user's cap.
+// Idempotent per cycle: only sends a command on the raise/revert transitions.
+async function manageChargeLimit(d, now) {
+  if (!state.teslaConfigured) return;
+  const soc = state.car?.batteryLevel;
+  const carLimit = state.car?.chargeLimitSoc;
+  if (soc == null || carLimit == null) return; // need real telemetry to act safely
+
+  // While boosted the car reads 100%, so the user's real cap is the stashed value.
+  const baseLimit = state.limitBoosted && savedChargeLimit != null ? savedChargeLimit : carLimit;
+  const haveSurplus = d.surplusW >= C.minAmps * d.voltage - C.resumeMarginWatts;
+  const wantBoost = state.allowLimitIncrease && d.connected && state.mode === 'auto'
+    && !state.override && !isScheduleActive() && baseLimit < 100 && soc < 100 && haveSurplus;
+
+  if (wantBoost) {
+    boostIdleSince = 0;
+    if (!state.limitBoosted) {
+      savedChargeLimit = carLimit; // stash the user's real limit before raising
+      state.limitBoosted = true;
+      persistBoost();
+      await safeCmd(`raise charge limit ${carLimit}%→100% (free sun)`, () => tesla.setChargeLimit(100));
+    }
+    return;
+  }
+
+  if (state.limitBoosted) {
+    const reason = !state.allowLimitIncrease ? 'off'
+      : !d.connected ? 'unplugged'
+      : state.override || isScheduleActive() || state.mode !== 'auto' ? 'manual'
+      : soc >= 100 ? 'full'
+      : 'no sun';
+    if (reason === 'no sun') { // grace period so passing clouds don't thrash the limit
+      if (!boostIdleSince) boostIdleSince = now;
+      if (now - boostIdleSince < BOOST_REVERT_DELAY_MS) return;
+    }
+    const restore = savedChargeLimit != null ? clamp(savedChargeLimit, 50, 100) : null;
+    state.limitBoosted = false;
+    savedChargeLimit = null;
+    boostIdleSince = 0;
+    persistBoost();
+    if (restore != null) await safeCmd(`revert charge limit →${restore}% (${reason})`, () => tesla.setChargeLimit(restore));
+  }
+}
+
 async function controlCycle() {
   const now = Date.now();
   state.lastCycleAt = now;
@@ -333,6 +411,7 @@ async function controlCycle() {
   }
 
   state.lastAction = action;
+  await manageChargeLimit(d, now);
   trackSession(now, d.isCharging, d.chargeW, appliedAmps, meters);
 
   db.recordSample({
@@ -432,4 +511,4 @@ function round1(n) {
   return n == null ? n : Math.round(n * 10) / 10;
 }
 
-export default { start, stop, getState, setMode, setOverride, clearOverride, setMaxAmps, setSchedule, manualCharge, popPending, recentEvents, bus, state };
+export default { start, stop, getState, setMode, setOverride, clearOverride, setMaxAmps, setSchedule, setAllowLimitIncrease, manualCharge, popPending, recentEvents, bus, state };

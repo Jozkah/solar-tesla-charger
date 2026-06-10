@@ -239,6 +239,18 @@ function renderControls(s) {
       : 'off';
   }
 
+  // Battery-limit-increase card (don't clobber the toggle while the user taps it).
+  const boostEn = $('boostEnabled');
+  if (boostEn) {
+    if (document.activeElement !== boostEn) boostEn.checked = !!s.allowLimitIncrease;
+    const limit = s.car?.chargeLimitSoc, soc = s.car?.batteryLevel;
+    $('boostSummary').textContent = s.limitBoosted
+      ? `boosting to 100%${soc != null ? ` · now ${soc}%` : ''}`
+      : s.allowLimitIncrease
+        ? `on${limit != null ? ` · your limit ${limit}%` : ''}`
+        : 'off';
+  }
+
   // Override controls reflect whether a manual hold is active.
   const ov = s.override;
   const apply = $('ovApply'), clear = $('ovClear'), lbl = $('ovLabel');
@@ -443,6 +455,8 @@ function postSchedule() {
 }
 ['schedEnabled', 'schedStart', 'schedEnd', 'schedAmps'].forEach((id) =>
   $(id).addEventListener('change', postSchedule));
+
+$('boostEnabled').addEventListener('change', (e) => post('/api/limit-boost', { on: e.target.checked }));
 
 document.querySelectorAll('#chartRangeSeg button').forEach((b) => b.addEventListener('click', () => {
   chartHours = Number(b.dataset.hours);

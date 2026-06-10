@@ -205,6 +205,21 @@
 
     <button id="chargeToggle" class="lg-btn lg-btn-green w-full py-4 text-[17px]">▶ Start charge</button>
 
+    <!-- Opportunistic battery-limit increase (charge past the set % on free solar) -->
+    <div class="glass rounded-3xl p-5 flex flex-col gap-4">
+      <div class="flex justify-between items-center">
+        <div>
+          <div class="text-mut text-[11px] font-semibold tracking-wider uppercase">Allow battery limit increase</div>
+          <div id="boostSummary" class="text-[13px] text-mut mt-0.5">off</div>
+        </div>
+        <label class="relative inline-flex items-center cursor-pointer">
+          <input type="checkbox" id="boostEnabled" class="sr-only peer" />
+          <div class="w-12 h-7 rounded-full bg-white/15 peer-checked:bg-ios-green/80 transition-colors after:content-[''] after:absolute after:top-0.5 after:left-0.5 after:bg-white after:rounded-full after:h-6 after:w-6 after:transition-all peer-checked:after:translate-x-5"></div>
+        </label>
+      </div>
+      <div class="text-[11px] text-mut">When there's free solar beyond your set battery limit, charge past it (up to 100%), then restore your limit once the sun drops. Min limit 50%.</div>
+    </div>
+
     <!-- Overnight / scheduled grid charge -->
     <div class="glass rounded-3xl p-5 flex flex-col gap-4">
       <div class="flex justify-between items-center">

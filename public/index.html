@@ -73,10 +73,10 @@
   .tooltip .t-row i { width:8px; height:8px; border-radius:2px; }
 </style>
 </head>
-<body class="pb-28 overflow-x-hidden">
+<body class="pb-28 overflow-x-hidden overscroll-y-none">
 
 <!-- decorative glow -->
-<div class="fixed inset-0 -z-10 opacity-20 pointer-events-none">
+<div class="fixed inset-0 -z-10 opacity-20 pointer-events-none" style="contain:paint; transform:translateZ(0); will-change:transform;">
   <div class="absolute -top-[10%] -right-[10%] w-[300px] h-[300px] bg-ios-blue rounded-full blur-[120px]"></div>
   <div class="absolute bottom-[20%] -left-[10%] w-[250px] h-[250px] bg-ios-amber rounded-full blur-[110px]"></div>
 </div>

@@ -20,11 +20,11 @@ it on your local network only.
 
 ## Screenshots
 
-<!-- Add screenshots to docs/screenshots/. NOTE: this repo is PUBLIC — blur/crop the live
-     camera tiles in the home-dashboard screenshot before committing it. -->
+> Mockup previews with fictional values and placeholder camera feeds — safe to share publicly.
+
 | Home dashboard | Solar charger |
 |:--:|:--:|
-| ![Home dashboard](docs/screenshots/home.png) | ![Solar charger](docs/screenshots/charger.png) |
+| ![Home dashboard](docs/screenshots/home.svg) | ![Solar charger](docs/screenshots/charger.svg) |
 
 ---
 

@@ -1,0 +1,73 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 820 650" font-family="-apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#0a0c10"/><stop offset="1" stop-color="#06070a"/></linearGradient>
+    <linearGradient id="camFade" x1="0" y1="0" x2="0" y2="1"><stop offset="0.55" stop-color="#000" stop-opacity="0"/><stop offset="1" stop-color="#000" stop-opacity="0.7"/></linearGradient>
+    <linearGradient id="door" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#2a2118"/><stop offset="1" stop-color="#0d0b08"/></linearGradient>
+    <linearGradient id="drive" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#23262b"/><stop offset="1" stop-color="#101214"/></linearGradient>
+    <linearGradient id="garden" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#16241a"/><stop offset="1" stop-color="#0a0f0b"/></linearGradient>
+    <linearGradient id="garage" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#1e2128"/><stop offset="1" stop-color="#0c0d10"/></linearGradient>
+    <clipPath id="c1"><rect x="28" y="212" width="372" height="150" rx="16"/></clipPath>
+    <clipPath id="c2"><rect x="420" y="212" width="372" height="150" rx="16"/></clipPath>
+    <clipPath id="c3"><rect x="28" y="378" width="372" height="150" rx="16"/></clipPath>
+    <clipPath id="c4"><rect x="420" y="378" width="372" height="150" rx="16"/></clipPath>
+  </defs>
+  <rect width="820" height="650" fill="url(#bg)"/>
+  <circle cx="40" cy="40" r="150" fill="#30D158" opacity="0.05"/>
+  <circle cx="780" cy="600" r="150" fill="#0A84FF" opacity="0.05"/>
+
+  <!-- header -->
+  <text x="28" y="42" fill="#f2f2f7" font-size="24" font-weight="800">Home</text>
+  <g transform="translate(636,18)"><rect width="68" height="28" rx="14" fill="#30D158" opacity="0.16"/><circle cx="16" cy="14" r="4" fill="#30D158"/><text x="28" y="19" fill="#30D158" font-size="12" font-weight="700">live</text></g>
+  <g transform="translate(712,18)"><rect width="80" height="28" rx="14" fill="#0A84FF" opacity="0.22"/><text x="40" y="19" fill="#eaf4ff" font-size="12" font-weight="600" text-anchor="middle">⚡ Tesla</text></g>
+
+  <!-- ENERGY tiles -->
+  <text x="28" y="80" fill="#9a9aa2" font-size="12" font-weight="700" letter-spacing="2">ENERGY</text>
+  <g>
+    <rect x="28" y="92" width="244" height="92" rx="18" fill="#1a1b20" stroke="#ffffff" stroke-opacity="0.10"/>
+    <text x="48" y="118" fill="#FFD60A" font-size="14">☀</text><text x="252" y="118" fill="#9a9aa2" font-size="11" font-weight="700" letter-spacing="1.2" text-anchor="end">SOLAR</text>
+    <text x="48" y="150" fill="#f2f2f7" font-size="22" font-weight="700">4.7<tspan font-size="12" font-weight="400" fill="#9a9aa2"> kW</tspan></text>
+    <text x="48" y="172" fill="#9a9aa2" font-size="10.5">Growatt 2758 · SolaX 1962 W</text>
+  </g>
+  <g>
+    <rect x="288" y="92" width="244" height="92" rx="18" fill="#1a1b20" stroke="#ffffff" stroke-opacity="0.10"/>
+    <text x="308" y="118" fill="#0A84FF" font-size="14">⚡</text><text x="512" y="118" fill="#9a9aa2" font-size="11" font-weight="700" letter-spacing="1.2" text-anchor="end">GRID</text>
+    <text x="308" y="150" fill="#f2f2f7" font-size="22" font-weight="700">633<tspan font-size="12" font-weight="400" fill="#9a9aa2"> W</tspan></text>
+    <text x="308" y="172" fill="#30D158" font-size="11" font-weight="600">exporting</text>
+  </g>
+  <g>
+    <rect x="548" y="92" width="244" height="92" rx="18" fill="#1a1b20" stroke="#ffffff" stroke-opacity="0.10"/>
+    <text x="568" y="118" fill="#30D158" font-size="14">⌂</text><text x="772" y="118" fill="#9a9aa2" font-size="11" font-weight="700" letter-spacing="1.2" text-anchor="end">HOUSE</text>
+    <text x="568" y="150" fill="#f2f2f7" font-size="22" font-weight="700">3.4<tspan font-size="12" font-weight="400" fill="#9a9aa2"> kW</tspan></text>
+    <text x="568" y="172" fill="#9a9aa2" font-size="10.5">19.5 kWh used today</text>
+  </g>
+
+  <!-- CAMERAS -->
+  <text x="28" y="206" fill="#9a9aa2" font-size="12" font-weight="700" letter-spacing="2">CAMERAS</text>
+  <!-- Front Door -->
+  <g clip-path="url(#c1)"><rect x="28" y="212" width="372" height="150" fill="url(#door)"/><rect x="170" y="250" width="70" height="112" rx="4" fill="#3a2e20"/><rect x="178" y="258" width="54" height="104" fill="#241c12"/><circle cx="226" cy="306" r="3" fill="#caa15a"/><ellipse cx="205" cy="232" rx="60" ry="22" fill="#caa15a" opacity="0.10"/><rect x="28" y="212" width="372" height="150" fill="url(#camFade)"/></g>
+  <circle cx="384" cy="228" r="4" fill="#FF453A"/><text x="372" y="232" fill="#fff" font-size="10" font-weight="700" text-anchor="end">LIVE</text>
+  <text x="44" y="350" fill="#fff" font-size="13" font-weight="600">Front Door</text>
+  <!-- Driveway -->
+  <g clip-path="url(#c2)"><rect x="420" y="212" width="372" height="150" fill="url(#drive)"/><rect x="500" y="290" width="210" height="46" rx="14" fill="#2c3138"/><rect x="528" y="276" width="150" height="30" rx="12" fill="#363c44"/><circle cx="540" cy="338" r="14" fill="#0c0d10"/><circle cx="668" cy="338" r="14" fill="#0c0d10"/><circle cx="540" cy="338" r="6" fill="#22262b"/><circle cx="668" cy="338" r="6" fill="#22262b"/><rect x="420" y="212" width="372" height="150" fill="url(#camFade)"/></g>
+  <circle cx="776" cy="228" r="4" fill="#FF453A"/><text x="764" y="232" fill="#fff" font-size="10" font-weight="700" text-anchor="end">LIVE</text>
+  <text x="436" y="350" fill="#fff" font-size="13" font-weight="600">Driveway</text>
+  <!-- Garden -->
+  <g clip-path="url(#c3)"><rect x="28" y="378" width="372" height="150" fill="url(#garden)"/><circle cx="90" cy="500" r="34" fill="#1d3a25"/><circle cx="150" cy="510" r="28" fill="#16301d"/><circle cx="300" cy="505" r="40" fill="#1a3622"/><rect x="28" y="500" width="372" height="28" fill="#0c1810"/><rect x="28" y="378" width="372" height="150" fill="url(#camFade)"/></g>
+  <circle cx="384" cy="394" r="4" fill="#FF453A"/><text x="372" y="398" fill="#fff" font-size="10" font-weight="700" text-anchor="end">LIVE</text>
+  <text x="44" y="516" fill="#fff" font-size="13" font-weight="600">Garden</text>
+  <!-- Garage -->
+  <g clip-path="url(#c4)"><rect x="420" y="378" width="372" height="150" fill="url(#garage)"/><rect x="500" y="410" width="212" height="118" rx="6" fill="#272b32"/><line x1="500" y1="438" x2="712" y2="438" stroke="#15171b" stroke-width="3"/><line x1="500" y1="466" x2="712" y2="466" stroke="#15171b" stroke-width="3"/><line x1="500" y1="494" x2="712" y2="494" stroke="#15171b" stroke-width="3"/><rect x="420" y="378" width="372" height="150" fill="url(#camFade)"/></g>
+  <circle cx="776" cy="394" r="4" fill="#FF453A"/><text x="764" y="398" fill="#fff" font-size="10" font-weight="700" text-anchor="end">LIVE</text>
+  <text x="436" y="516" fill="#fff" font-size="13" font-weight="600">Garage</text>
+
+  <!-- SMART PLUGS -->
+  <text x="28" y="556" fill="#9a9aa2" font-size="12" font-weight="700" letter-spacing="2">SMART PLUGS</text>
+  <rect x="28" y="566" width="372" height="60" rx="18" fill="#1a1b20" stroke="#ffffff" stroke-opacity="0.10"/>
+  <text x="48" y="596" fill="#f2f2f7" font-size="14" font-weight="600">🔥 Water Heater</text>
+  <text x="48" y="614" fill="#9a9aa2" font-size="11">1.8 kW · on</text>
+  <rect x="332" y="584" width="48" height="26" rx="13" fill="#30D158"/><circle cx="367" cy="597" r="11" fill="#fff"/>
+  <rect x="420" y="566" width="372" height="60" rx="18" fill="#1a1b20" stroke="#ffffff" stroke-opacity="0.10"/>
+  <text x="440" y="596" fill="#f2f2f7" font-size="14" font-weight="600">🔌 Office</text>
+  <text x="440" y="614" fill="#9a9aa2" font-size="11">42 W · on</text>
+  <rect x="724" y="584" width="48" height="26" rx="13" fill="#30D158"/><circle cx="759" cy="597" r="11" fill="#fff"/>
+</svg>

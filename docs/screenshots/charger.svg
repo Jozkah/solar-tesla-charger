@@ -1,0 +1,96 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 820 600" font-family="-apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0a0c10"/><stop offset="1" stop-color="#06070a"/>
+    </linearGradient>
+    <linearGradient id="glow" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1d2330"/><stop offset="1" stop-color="#15171d"/>
+    </linearGradient>
+  </defs>
+  <rect width="820" height="600" fill="url(#bg)"/>
+  <!-- subtle corner glows -->
+  <circle cx="760" cy="40" r="150" fill="#0A84FF" opacity="0.06"/>
+  <circle cx="40" cy="560" r="150" fill="#FFD60A" opacity="0.05"/>
+
+  <!-- header -->
+  <text x="28" y="42" fill="#f2f2f7" font-size="24" font-weight="800">Solar Charger</text>
+  <g transform="translate(636,18)">
+    <rect width="68" height="28" rx="14" fill="#30D158" opacity="0.16"/>
+    <circle cx="16" cy="14" r="4" fill="#30D158"/>
+    <text x="28" y="19" fill="#30D158" font-size="12" font-weight="700">live</text>
+  </g>
+  <g transform="translate(712,18)">
+    <rect width="80" height="28" rx="14" fill="#0A84FF" opacity="0.22"/>
+    <text x="40" y="19" fill="#eaf4ff" font-size="12" font-weight="600" text-anchor="middle">🏠 Home</text>
+  </g>
+
+  <!-- GRID POWER hero -->
+  <rect x="28" y="64" width="764" height="122" rx="22" fill="#1a1b20" stroke="#ffffff" stroke-opacity="0.10"/>
+  <text x="48" y="92" fill="#9a9aa2" font-size="11" font-weight="700" letter-spacing="2">GRID POWER</text>
+  <text x="724" y="92" fill="#9a9aa2" font-size="13" text-anchor="end">🏠 → ⚡</text>
+  <text x="46" y="146" fill="#f2f2f7" font-size="50" font-weight="800">1240<tspan font-size="22" font-weight="500" fill="#9a9aa2"> W</tspan></text>
+  <circle cx="430" cy="120" r="4" fill="#30D158"/>
+  <text x="442" y="125" fill="#30D158" font-size="15" font-weight="700">Exporting to grid</text>
+  <text x="48" y="172" fill="#9a9aa2" font-size="12.5">exporting 1240 W · 1010 W free for the car (≈4.2 A)</text>
+
+  <!-- SOLAR + CHARGING -->
+  <g>
+    <rect x="28" y="198" width="372" height="98" rx="20" fill="#1a1b20" stroke="#ffffff" stroke-opacity="0.10"/>
+    <text x="48" y="226" fill="#FFD60A" font-size="15">☀</text>
+    <text x="380" y="226" fill="#9a9aa2" font-size="11" font-weight="700" letter-spacing="1.5" text-anchor="end">SOLAR</text>
+    <text x="48" y="262" fill="#f2f2f7" font-size="26" font-weight="700">5.2<tspan font-size="14" font-weight="400" fill="#9a9aa2"> kW</tspan></text>
+    <text x="48" y="284" fill="#9a9aa2" font-size="11.5">Growatt 3100 · SolaX 2100 W</text>
+  </g>
+  <g>
+    <rect x="420" y="198" width="372" height="98" rx="20" fill="#1a1b20" stroke="#ffffff" stroke-opacity="0.10"/>
+    <text x="440" y="226" fill="#0A84FF" font-size="15">⚡</text>
+    <text x="772" y="226" fill="#9a9aa2" font-size="11" font-weight="700" letter-spacing="1.5" text-anchor="end">CHARGING</text>
+    <text x="440" y="262" fill="#f2f2f7" font-size="26" font-weight="700">12<tspan font-size="14" font-weight="400" fill="#9a9aa2"> A</tspan></text>
+    <text x="440" y="284" fill="#9a9aa2" font-size="11.5">2.9 kW · 64%→80% · 18.4 kWh</text>
+  </g>
+
+  <!-- TARGET + VOLTAGE -->
+  <g>
+    <rect x="28" y="308" width="372" height="92" rx="20" fill="#1a1b20" stroke="#ffffff" stroke-opacity="0.10"/>
+    <circle cx="52" cy="334" r="7" fill="none" stroke="#30D158" stroke-width="2"/><circle cx="52" cy="334" r="2.5" fill="#30D158"/>
+    <text x="380" y="334" fill="#9a9aa2" font-size="11" font-weight="700" letter-spacing="1.5" text-anchor="end">TARGET</text>
+    <text x="48" y="372" fill="#f2f2f7" font-size="24" font-weight="700">12<tspan font-size="13" font-weight="400" fill="#9a9aa2"> A</tspan></text>
+    <text x="120" y="372" fill="#9a9aa2" font-size="11.5">2870 W from sun</text>
+  </g>
+  <g>
+    <rect x="420" y="308" width="372" height="92" rx="20" fill="#1a1b20" stroke="#ffffff" stroke-opacity="0.10"/>
+    <text x="772" y="334" fill="#9a9aa2" font-size="11" font-weight="700" letter-spacing="1.5" text-anchor="end">VOLTAGE</text>
+    <text x="440" y="372" fill="#f2f2f7" font-size="24" font-weight="700">238.4<tspan font-size="13" font-weight="400" fill="#9a9aa2"> V</tspan></text>
+    <text x="540" y="372" fill="#9a9aa2" font-size="11.5">PF 0.99</text>
+  </g>
+
+  <!-- POWER chart -->
+  <rect x="28" y="412" width="764" height="166" rx="22" fill="#1a1b20" stroke="#ffffff" stroke-opacity="0.10"/>
+  <text x="48" y="440" fill="#9a9aa2" font-size="11" font-weight="700" letter-spacing="2">POWER</text>
+  <g font-size="11" fill="#9a9aa2">
+    <rect x="556" y="431" width="9" height="9" rx="2" fill="#34d399"/><text x="569" y="439">export</text>
+    <rect x="612" y="431" width="9" height="9" rx="2" fill="#60a5fa"/><text x="625" y="439">charge</text>
+    <rect x="666" y="431" width="9" height="9" rx="2" fill="#fbbf24"/><text x="679" y="439">solar</text>
+    <rect x="716" y="431" width="9" height="9" rx="2" fill="#FF453A"/><text x="729" y="439">import</text>
+  </g>
+  <!-- segmented control -->
+  <rect x="48" y="450" width="724" height="30" rx="14" fill="#78788029"/>
+  <rect x="51" y="453" width="178" height="24" rx="12" fill="#ffffff" opacity="0.16"/>
+  <text x="140" y="469" fill="#fff" font-size="12" font-weight="600" text-anchor="middle">1h</text>
+  <text x="320" y="469" fill="#9a9aa2" font-size="12" font-weight="600" text-anchor="middle">6h</text>
+  <text x="500" y="469" fill="#9a9aa2" font-size="12" font-weight="600" text-anchor="middle">24h</text>
+  <text x="681" y="469" fill="#9a9aa2" font-size="12" font-weight="600" text-anchor="middle">7d</text>
+  <!-- chart area -->
+  <g transform="translate(48,492)">
+    <line x1="0" y1="20" x2="724" y2="20" stroke="#ffffff" stroke-opacity="0.05"/>
+    <line x1="0" y1="48" x2="724" y2="48" stroke="#ffffff" stroke-opacity="0.05"/>
+    <!-- solar (yellow) -->
+    <polyline fill="none" stroke="#fbbf24" stroke-width="2" points="0,30 60,18 120,24 180,12 240,20 300,10 360,22 420,14 480,8 540,18 600,12 660,22 724,14"/>
+    <!-- charge (blue) -->
+    <polyline fill="none" stroke="#60a5fa" stroke-width="2" points="0,52 60,46 120,40 180,42 240,38 300,40 360,36 420,40 480,34 540,42 600,38 660,40 724,36"/>
+    <!-- export (green) -->
+    <polyline fill="none" stroke="#34d399" stroke-width="1.6" points="0,66 60,62 120,68 180,60 240,64 300,58 360,66 420,60 480,62 540,66 600,60 660,64 724,62"/>
+    <!-- import (red) -->
+    <polyline fill="none" stroke="#FF453A" stroke-width="1.4" opacity="0.85" points="0,72 60,70 120,73 180,71 240,72 300,70 360,73 420,71 480,72 540,70 600,73 660,71 724,72"/>
+  </g>
+</svg>

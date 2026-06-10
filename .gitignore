@@ -3,3 +3,5 @@ data/
 .env
 *.log
 .DS_Store
+# Real deployment config (your IPs / device map). Copy config.json.example -> config.json.
+config.json

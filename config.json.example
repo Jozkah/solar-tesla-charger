@@ -1,0 +1,79 @@
+{
+  "server": {
+    "port": 3000,
+    "host": "0.0.0.0"
+  },
+  "shelly": {
+    "devices": [
+      {
+        "ip": "192.168.1.21",
+        "channels": {
+          "0": { "key": "floor1", "label": "Floor 1", "role": "load" },
+          "1": { "key": "floor2", "label": "Floor 2", "role": "load_with_solar", "note": "set load_with_solar on the channel a solar string back-feeds into" }
+        }
+      },
+      {
+        "ip": "192.168.1.22",
+        "channels": {
+          "0": { "key": "grid", "label": "Grid (total)", "role": "grid" },
+          "1": { "key": "solarPanels2", "label": "Inverter", "role": "solar" }
+        }
+      }
+    ],
+    "timeoutMs": 4000
+  },
+  "wallconnector": {
+    "enabled": true,
+    "ip": "192.168.1.30",
+    "timeoutMs": 3000
+  },
+  "solax": {
+    "enabled": true,
+    "pollSec": 60,
+    "timeoutMs": 8000
+  },
+  "weather": {
+    "enabled": true,
+    "pollMin": 10,
+    "lat": null,
+    "lon": null,
+    "timeoutMs": 8000
+  },
+  "notify": {
+    "enabled": true,
+    "channel": "auto"
+  },
+  "control": {
+    "pollIntervalSec": 10,
+    "livePollSec": 2,
+    "carPollSec": 90,
+    "voltage": 230,
+    "bufferWatts": 500,
+    "bufferBandLowWatts": 300,
+    "bufferBandHighWatts": 800,
+    "minAmps": 5,
+    "maxAmps": 32,
+    "minAmpStepChange": 1,
+    "stopWhenInsufficient": true,
+    "resumeMarginWatts": 200,
+    "solarFasterMarginAmps": 2,
+    "solarFasterSustainSec": 120,
+    "solarFasterCooldownMin": 30,
+    "dryRun": false
+  },
+  "tesla": {
+    "backend": "teslamateapi",
+    "teslamateapi": {
+      "baseUrl": "http://localhost:8080",
+      "carId": 1
+    },
+    "proxyBaseUrl": "https://localhost:4443",
+    "rejectUnauthorized": false,
+    "wakeIfAsleep": true,
+    "commandRetries": 2
+  },
+  "db": {
+    "path": "data/energy.db",
+    "sampleRetentionDays": 60
+  }
+}

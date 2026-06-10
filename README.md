@@ -18,6 +18,14 @@ it on your local network only.
 > IPs (cameras, plugs, meters) are **local-LAN addresses, not secrets**, so they live
 > in `config.json`. Only credentials (tokens, account passwords) go in `.env`.
 
+## Screenshots
+
+<!-- Add screenshots to docs/screenshots/. NOTE: this repo is PUBLIC — blur/crop the live
+     camera tiles in the home-dashboard screenshot before committing it. -->
+| Home dashboard | Solar charger |
+|:--:|:--:|
+| ![Home dashboard](docs/screenshots/home.png) | ![Solar charger](docs/screenshots/charger.png) |
+
 ---
 
 ## Table of contents

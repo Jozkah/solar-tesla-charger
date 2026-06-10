@@ -428,18 +428,16 @@ box.addEventListener('touchend', hideHover);
 // --- Stats ------------------------------------------------------------------
 async function refreshStats() {
   let st; try { st = await (await fetch('/api/stats?range=' + range)).json(); } catch { return; }
-  const c = st.car || {}, h = st.home || {};
+  const c = st.car || {};
   const cells = [
     ['Charged', fmtKwh(c.energyWh), 'kWh'],
+    ['Using solar', fmtKwh(c.solarWh), 'kWh'],
+    ['Using grid', fmtKwh(c.gridWh), 'kWh'],
     ['From solar', c.solarPct != null ? c.solarPct : '–', '%'],
     ['Peak', ((c.peakW || 0) / 1000).toFixed(1), 'kW'],
     ['Peak amps', c.peakAmps || 0, 'A'],
     ['Charge time', fmtDur(c.chargingMinutes), ''],
     ['Adjusts', c.adjustments || 0, ''],
-    ['Home used', fmtKwh(h.usedWh), 'kWh'],
-    ['Solar gen', fmtKwh(h.solarGeneratedWh), 'kWh'],
-    ['Exported', fmtKwh(h.exportedWh), 'kWh'],
-    ['Imported', fmtKwh(h.importedWh), 'kWh'],
   ];
   $('statsGrid').innerHTML = cells.map(([k, v, u]) =>
     `<div class="glass rounded-2xl p-3.5 flex flex-col gap-1">

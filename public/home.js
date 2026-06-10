@@ -353,10 +353,23 @@ $('viewerClose').addEventListener('click', closeViewer);
 $('viewer').addEventListener('click', (e) => { if (e.target.id === 'viewer') closeViewer(); });
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape') { closeViewer(); closeWxModal(); } });
 
+// --- Whole-home energy totals (today), from /api/stats ----------------------
+const fmtKwh = (wh) => (wh == null ? '–' : (wh / 1000).toFixed(2));
+async function loadStats() {
+  let st; try { st = await (await fetch('/api/stats?range=today')).json(); } catch { return; }
+  const h = st.home || {};
+  $('stSolarGen').textContent = fmtKwh(h.solarGeneratedWh);
+  $('stExported').textContent = fmtKwh(h.exportedWh);
+  $('stImported').textContent = fmtKwh(h.importedWh);
+  $('stHouseUsed').textContent = fmtKwh(h.usedWh);
+}
+
 // --- Boot --------------------------------------------------------------------
 loadCameras();
 loadWeather();
 loadChart();
+loadStats();
 connect();
 chartTimer = setInterval(loadChart, 20_000);
 setInterval(loadWeather, 600_000);
+setInterval(loadStats, 60_000);

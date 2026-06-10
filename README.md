@@ -15,6 +15,9 @@ drives Apple Shortcuts.
 
 ![Solar-aware Tesla charging dashboard](docs/screenshots/charger.svg)
 
+> The page backdrop adapts to the **live weather** (clear/cloudy/rain/snow/storm, day/night).
+> Drop AI-generated images into `public/bg/` — prompts in [docs/weather-bg-prompts.md](docs/weather-bg-prompts.md).
+
 ---
 
 ## Table of contents

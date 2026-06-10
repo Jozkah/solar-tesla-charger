@@ -193,6 +193,18 @@ async function proxyGetVehicleData() {
 }
 function mi2km(mi) { return mi == null ? null : Math.round(mi * 1.60934 * 10) / 10; }
 async function peek(res) { try { return await res.clone().text(); } catch { return ''; } }
+
+// Tesla returns result:false with a harmless reason for idempotent no-ops — e.g.
+// charge_start while the car is already charging, or charge_stop while already
+// stopped. Treat those as success so they don't surface as command errors.
+const BENIGN_CMD_REASONS = new Set(['is_charging', 'not_charging', 'complete', 'already_set']);
+function commandFailed(res, json) {
+  if (!res.ok) return true;
+  if (json?.response?.result === false) {
+    return !BENIGN_CMD_REASONS.has(String(json.response.reason || '').toLowerCase());
+  }
+  return false;
+}
 async function proxyCommand(command, payload) {
   if (config.control.dryRun) return { dryRun: true, command, payload };
   const url = `${t.proxyBaseUrl}/api/1/vehicles/${t.vin}/command/${command}`;
@@ -202,7 +214,7 @@ async function proxyCommand(command, payload) {
       const res = await fetch(url, { method: 'POST', headers: await proxyHeaders(), body: JSON.stringify(payload || {}), dispatcher: proxyAgent });
       const json = await res.json().catch(() => ({}));
       if (res.status === 408 && t.wakeIfAsleep) { await proxyWake(); await sleep(8000); continue; }
-      if (!res.ok || json?.response?.result === false) throw new Error(`${command} HTTP ${res.status} ${JSON.stringify(json)}`);
+      if (commandFailed(res, json)) throw new Error(`${command} HTTP ${res.status} ${JSON.stringify(json)}`);
       return json;
     } catch (err) { lastErr = err; await sleep(1500); }
   }
@@ -227,7 +239,7 @@ async function fleetCommand(command, payload) {
       const res = await fetch(url, { method: 'POST', headers: await proxyHeaders(), body: JSON.stringify(payload || {}) });
       const json = await res.json().catch(() => ({}));
       if (res.status === 408 && t.wakeIfAsleep) { await fleetWake(); await sleep(8000); continue; }
-      if (!res.ok || json?.response?.result === false) {
+      if (commandFailed(res, json)) {
         throw new Error(`${command} HTTP ${res.status} ${JSON.stringify(json)}`);
       }
       return json;

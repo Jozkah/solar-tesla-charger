@@ -9,6 +9,17 @@ const $ = (id) => document.getElementById(id);
 const fmtW = (w) => (w == null || Number.isNaN(w) ? '–' : Math.round(w).toLocaleString());
 const fmtKw = (w) => (w == null || Number.isNaN(w) ? '–' : (w / 1000).toFixed(1));
 
+// iOS-style inline SVG icons (matching the Tesla view) for the energy tiles.
+const ICON_PATHS = {
+  sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M19.1 4.9l-1.4 1.4M6.3 17.7l-1.4 1.4"/>',
+  bolt: '<path d="M13 2L4 14h7l-1 8 9-12h-7z"/>',
+  house: '<path d="M3 10.5 12 3l9 7.5"/><path d="M5.5 9.5V20h13V9.5"/>',
+};
+function icon(name, size = 18) {
+  const filled = name === 'bolt';
+  return `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="${filled ? 'currentColor' : 'none'}" stroke="${filled ? 'none' : 'currentColor'}" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="display:block">${ICON_PATHS[name] || ''}</svg>`;
+}
+
 // --- Connection (SSE + polling fallback) ------------------------------------
 function setConn(ok, text) {
   const wrap = $('conn'), dot = $('connDot'), t = $('connText');
@@ -36,7 +47,6 @@ function stopPolling() { if (pollTimer) { clearInterval(pollTimer); pollTimer = 
 function handleState(s) {
   setConn(true, 'live');
   renderEnergy(s);
-  renderSolarPanels(s);
   renderMeters(s);
   renderPlugs(s);
   renderCamStatus(s);
@@ -57,46 +67,16 @@ function renderEnergy(s) {
   const solar = solarTotal(s);
   const gp = m.gridPower; // + import, - export
   $('solar').textContent = fmtKw(solar);
+  // Per-panel breakdown on the SOLAR tile's sub-line (like the Tesla view).
+  const growattW = m.solarPanels2 < 0 ? -m.solarPanels2 : 0;
+  const solaxW = s.solax && s.solax.ok && s.solax.acpower != null ? Math.max(0, s.solax.acpower) : null;
+  $('solarSub').textContent = solaxW != null ? `Growatt ${fmtW(growattW)} · SolaX ${fmtW(solaxW)} W` : `${fmtW(solar)} W now`;
   $('house').textContent = fmtKw(Math.max(0, solar + gp));
   const exporting = gp < 0;
   $('grid').textContent = fmtW(Math.abs(gp));
   const gl = $('gridLabel');
   gl.textContent = exporting ? 'exporting' : 'importing';
   gl.style.color = exporting ? '#30D158' : '#FF453A';
-}
-
-// --- Per-panel solar breakdown (live) ---------------------------------------
-function renderSolarPanels(s) {
-  const wrap = $('solarPanels'), body = $('solarPanelsBody');
-  if (!wrap || !body) return;
-  const m = s.meters;
-  if (!m) { wrap.hidden = true; return; }
-
-  const panels = [];
-  // SolaX (cloud) — generation reported as positive acpower.
-  if (s.solax && s.solax.ok && s.solax.acpower != null) {
-    panels.push({ label: 'SolaX', color: '#FF9F0A', power: Math.max(0, s.solax.acpower), cloud: true });
-  }
-  // Growatt (solarPanels2) — negative = generation.
-  if (m.solarPanels2 != null && m.solarPanels2 < 0) {
-    panels.push({ label: 'Growatt', color: '#FFD60A', power: -m.solarPanels2 });
-  }
-  // solarPanel1 → floor1 channel injection — negative power = generation.
-  const f1 = m.channels?.floor1?.power;
-  if (f1 != null && f1 < 0) {
-    panels.push({ label: 'Solar panel 1', color: '#30D158', power: -f1 });
-  }
-
-  if (!panels.length) { wrap.hidden = true; body.innerHTML = ''; return; }
-  wrap.hidden = false;
-  body.innerHTML = panels.map((p, i, arr) => {
-    const border = i < arr.length - 1 ? 'hairline-b' : '';
-    const cloudTag = p.cloud ? ' <span class="text-mut text-[10px] font-normal">cloud</span>' : '';
-    return `<div class="grid grid-cols-3 py-2.5 items-center tnum text-[13.5px] ${border}">
-      <div class="col-span-2 flex items-center gap-2 font-medium"><span class="inline-block w-2 h-2 rounded-full" style="background:${p.color}"></span>${p.label}${cloudTag}</div>
-      <div class="text-right font-semibold text-ios-amber">${fmtW(p.power)}<span class="text-mut text-[11px] font-normal ml-0.5">W</span></div>
-    </div>`;
-  }).join('');
 }
 
 // --- House per-circuit meters (ported from the Tesla view) -------------------
@@ -433,6 +413,9 @@ async function loadStats() {
 }
 
 // --- Boot --------------------------------------------------------------------
+$('ic-solar').innerHTML = icon('sun');
+$('ic-grid').innerHTML = icon('bolt');
+$('ic-house').innerHTML = icon('house');
 loadCameras();
 loadWeather();
 loadChart();

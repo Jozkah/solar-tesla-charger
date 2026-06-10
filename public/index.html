@@ -79,24 +79,24 @@
 <!-- Top bar -->
 <header class="sticky top-0 z-50 bg-bg/80 backdrop-blur-xl border-b border-white/5">
   <div class="flex items-center justify-between px-5 pt-5 pb-3">
-    <div>
-      <h1 class="text-[26px] font-extrabold tracking-tight leading-none">Solar Charger</h1>
-      <div class="flex items-center gap-2 mt-1">
-        <div id="foot" class="text-[11px] text-mut">—</div>
-        <a href="/" class="text-[11px] font-semibold text-ios-blue">🏠 Home</a>
-      </div>
-    </div>
-    <div class="flex flex-col items-end gap-1.5">
+    <h1 class="text-[26px] font-extrabold tracking-tight leading-none">Solar Charger</h1>
+    <div class="flex items-center gap-2.5">
+      <a href="/" class="lg-btn lg-btn-blue">🏠 Home</a>
       <div id="conn" class="flex items-center gap-2 px-3 py-1.5 rounded-full bg-ios-green/15">
         <span id="connDot" class="w-2 h-2 rounded-full bg-ios-green dot-live"></span>
         <span id="connText" class="text-ios-green text-xs font-semibold">Live</span>
       </div>
-      <div id="weather" class="text-[12px] text-mut tnum" hidden></div>
     </div>
   </div>
 </header>
 
 <main class="px-5 pt-5 flex flex-col gap-5 max-w-[720px] mx-auto">
+
+  <!-- Status line (relocated from the header so both pages share the same header) -->
+  <div class="flex items-center justify-between px-1 -mb-2 -mt-1">
+    <div id="foot" class="text-[11px] text-mut">—</div>
+    <div id="weather" class="text-[12px] text-mut tnum" hidden></div>
+  </div>
 
   <!-- Banner -->
   <section id="banner" class="text-amber-200 text-[13px] rounded-2xl px-4 py-3" style="background:rgba(120,70,30,.35);border:1px solid rgba(180,100,50,.4)" hidden></section>

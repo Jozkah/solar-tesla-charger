@@ -180,7 +180,14 @@ function renderCards(s) {
     $('chargeAmps').textContent = 0;
     const connected = (s.wc && !s.wc.error) ? s.wc.connected : car?.pluggedIn;
     cs = connected ? 'plugged in' : 'unplugged';
-    cs += potential > 0 ? ` · could charge at ${potential}A from sun` : ' · no surplus';
+    const standbyW = comp?.standbyW || 0;
+    if (connected && standbyW > 100) {
+      // Plugged in, not charging, but the car is drawing power for battery/cabin
+      // conditioning or Sentry — show it so the draw is accounted for, not "charging".
+      cs += ` · ❄️ conditioning, drawing ${fmtW(standbyW)} W`;
+    } else {
+      cs += potential > 0 ? ` · could charge at ${potential}A from sun` : ' · no surplus';
+    }
     if (car?.batteryLevel != null) cs += ` · ${car.batteryLevel}%`;
   }
   $('chargeSub').textContent = cs;

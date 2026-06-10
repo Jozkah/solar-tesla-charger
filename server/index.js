@@ -90,6 +90,14 @@ app.post('/api/maxamps', (req, res) => {
   }
 });
 
+app.post('/api/limit-boost', (req, res) => {
+  try {
+    res.json({ ok: true, allowLimitIncrease: controller.setAllowLimitIncrease(req.body?.on) });
+  } catch (e) {
+    res.status(400).json({ ok: false, error: e.message });
+  }
+});
+
 app.post('/api/charge', async (req, res) => {
   try {
     const r = await controller.manualCharge(req.body?.action);

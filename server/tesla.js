@@ -273,6 +273,13 @@ export async function getVehicleData() {
 export async function setChargingAmps(amps) {
   return dispatchCommand('set_charging_amps', { charging_amps: Math.round(amps) });
 }
+export async function setChargeLimit(percent) {
+  // Tesla allows a SoC limit of 50–100%. Fleet/proxy take { percent };
+  // TeslaMateApi's set_charge_limit takes { charge_limit_soc }.
+  const p = Math.max(50, Math.min(100, Math.round(percent)));
+  const payload = cmdBackend === 'fleet' || cmdBackend === 'proxy' ? { percent: p } : { charge_limit_soc: p };
+  return dispatchCommand('set_charge_limit', payload);
+}
 export async function chargeStart() {
   return dispatchCommand('charge_start', {});
 }
@@ -293,4 +300,4 @@ function num(n) {
 function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
 async function safeText(res) { try { return await res.text(); } catch { return ''; } }
 
-export default { getVehicleData, setChargingAmps, chargeStart, chargeStop, wake, teslaConfigured };
+export default { getVehicleData, setChargingAmps, setChargeLimit, chargeStart, chargeStop, wake, teslaConfigured };

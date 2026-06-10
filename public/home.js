@@ -79,7 +79,7 @@ function applyWeatherBg(w) {
     const url = `bg/${name}.${exts[0]}`;
     const img = new Image();
     img.onload = () => {
-      el.style.backgroundImage = `linear-gradient(rgba(5,6,8,.62), rgba(5,6,8,.88)), url('${url}')`;
+      el.style.backgroundImage = `linear-gradient(rgba(5,6,8,.45), rgba(5,6,8,.85)), url('${url}')`;
       el.classList.add('on');
     };
     img.onerror = () => tryLoad(exts.slice(1));

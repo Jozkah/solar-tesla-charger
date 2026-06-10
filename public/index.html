@@ -73,9 +73,14 @@
   .tooltip .t-time { color:var(--mut,#9a9aa2); margin-bottom:4px; font-size:11px; opacity:.7; }
   .tooltip .t-row { display:flex; align-items:center; gap:6px; }
   .tooltip .t-row i { width:8px; height:8px; border-radius:2px; }
+  #bgWeather { position:fixed; inset:0; z-index:-30; background-size:cover; background-position:center; opacity:0; transition:opacity 1.5s ease; pointer-events:none; }
+  #bgWeather.on { opacity:1; }
 </style>
 </head>
 <body class="pb-28 overflow-x-hidden overscroll-y-none">
+
+<!-- weather-reactive backdrop (images in bg/, optional) -->
+<div id="bgWeather" aria-hidden="true"></div>
 
 <!-- decorative glow -->
 <div class="fixed inset-0 -z-10 opacity-20 pointer-events-none" style="contain:paint; transform:translateZ(0); will-change:transform;">

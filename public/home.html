@@ -89,9 +89,14 @@
     background:linear-gradient(to top, #0e0f12 30%, rgba(14,15,18,0)); -webkit-backdrop-filter:blur(2px); backdrop-filter:blur(2px);
     border-bottom-left-radius:24px; border-bottom-right-radius:24px; }
   .navlink { font-size:13px; font-weight:600; color:#9a9aa2; text-decoration:none; }
+  #bgWeather { position:fixed; inset:0; z-index:-30; background-size:cover; background-position:center; opacity:0; transition:opacity 1.5s ease; pointer-events:none; }
+  #bgWeather.on { opacity:1; }
 </style>
 </head>
 <body class="pb-20 overflow-x-hidden">
+
+<!-- weather-reactive backdrop (images in bg/, optional) -->
+<div id="bgWeather" aria-hidden="true"></div>
 
 <div class="fixed inset-0 -z-10 opacity-20 pointer-events-none">
   <div class="absolute -top-[10%] -left-[10%] w-[300px] h-[300px] bg-ios-green rounded-full blur-[120px]"></div>

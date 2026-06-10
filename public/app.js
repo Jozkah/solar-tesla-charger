@@ -33,6 +33,41 @@ function weatherIconName(code) {
   return 'cloud';
 }
 
+// --- Weather-reactive backdrop ----------------------------------------------
+// Images live in bg/<name>.jpg|png|webp (see bg/README.md). Missing files are
+// fine — the page just keeps its plain dark background.
+function weatherBgName(code, isDay) {
+  const d = isDay === false ? 'night' : 'day';
+  if (code === 0) return `clear-${d}`;
+  if (code === 1 || code === 2) return `partly-${d}`;
+  if (code === 3) return 'overcast';
+  if (code === 45 || code === 48) return 'fog';
+  if ((code >= 51 && code <= 67) || (code >= 80 && code <= 82)) return 'rain';
+  if ((code >= 71 && code <= 77) || code === 85 || code === 86) return 'snow';
+  if (code >= 95) return 'storm';
+  return 'overcast';
+}
+let bgCurrent = null;
+function applyWeatherBg(w) {
+  const el = document.getElementById('bgWeather');
+  if (!el || !w || !w.ok || w.code == null) return;
+  const name = weatherBgName(w.code, w.isDay);
+  if (name === bgCurrent) return;
+  bgCurrent = name; // probe once per condition change, not every tick
+  const tryLoad = (exts) => {
+    if (!exts.length) return;
+    const url = `bg/${name}.${exts[0]}`;
+    const img = new Image();
+    img.onload = () => {
+      el.style.backgroundImage = `linear-gradient(rgba(5,6,8,.62), rgba(5,6,8,.88)), url('${url}')`;
+      el.classList.add('on');
+    };
+    img.onerror = () => tryLoad(exts.slice(1));
+    img.src = url;
+  };
+  tryLoad(['jpg', 'png', 'webp']);
+}
+
 let range = 'today';
 let lastState = null;
 let chartData = []; // {ts, exportW, importW, chargeW, solarW}
@@ -296,6 +331,7 @@ function renderDetail(s) {
 
 function renderWeather(s) {
   const el = $('weather'); const w = s.weather;
+  applyWeatherBg(w);
   if (w && w.ok && w.tempC != null) {
     el.hidden = false;
     el.className = 'flex items-center gap-3';

@@ -26,6 +26,9 @@ it on your local network only.
 |:--:|:--:|
 | ![Home dashboard](docs/screenshots/home.svg) | ![Solar charger](docs/screenshots/charger.svg) |
 
+> Both pages' backdrops adapt to the **live weather** (clear/cloudy/rain/snow/storm, day/night).
+> Drop AI-generated images into `public/bg/` — prompts in [docs/weather-bg-prompts.md](docs/weather-bg-prompts.md).
+
 ---
 
 ## Table of contents

@@ -204,6 +204,15 @@ function clamp(n, lo, hi) {
   return Math.max(lo, Math.min(hi, n));
 }
 
+// Voltage-drop throttle ("Charge rate reduced" in the Tesla app): the car keeps
+// charge_current_request at the set value but draws fewer amps. Detected straight
+// from that car-reported gap and LATCHED — the control loop follows the car down,
+// which erases the live gap, but the underlying condition usually persists until
+// replug, so the banner must too.
+let throttleStreak = 0;
+let throttleLatch = null; // { since, requestA, actualA }
+let throttleClearSince = null;
+
 // Pure computation shared by both loops. The Wall Connector (wc) is the preferred
 // source for actual current / voltage / charging+plugged state when available.
 function computeDecision(meters, car, wc) {
@@ -228,14 +237,40 @@ function computeDecision(meters, car, wc) {
   if (carMax && carMax > 0) ampCeiling = Math.min(ampCeiling, carMax); // car/circuit limit
   if (state.maxAmps) ampCeiling = Math.min(ampCeiling, state.maxAmps); // user-set auto cap
   const targetAmps = clamp(Math.floor(surplusW / voltage), C.minAmps, ampCeiling);
-  // Only a genuine voltage-drop throttle: car pulling materially fewer amps than
-  // commanded AND the charging voltage is actually sagging. A healthy ~230V+ with
-  // a commanded/actual gap is not a throttle (usually a failed/stale command).
-  const throttled =
-    isCharging && actualAmps != null && commandedAmps != null &&
-    commandedAmps - actualAmps >= 2 && voltage > 0 && voltage < (C.throttleVoltage || 217);
+  // Voltage-drop throttle, read from the car's own report: it draws materially
+  // fewer amps than its charge_current_request. Guard with lastSetAmps so a stale
+  // car snapshot right after WE lowered the command doesn't false-positive
+  // (real throttle = actual is also well below what we last set).
+  const carReqAmps = car?.chargeCurrentRequest ?? commandedAmps;
+  const gapNow =
+    isCharging && actualAmps != null && carReqAmps != null &&
+    carReqAmps - actualAmps >= 2 &&
+    (lastSetAmps == null || actualAmps <= lastSetAmps - 2);
+  if (gapNow) {
+    throttleStreak++;
+    throttleClearSince = null;
+    if (throttleStreak >= 2 && !throttleLatch) {
+      throttleLatch = { since: Date.now(), requestA: carReqAmps, actualA: Math.round(actualAmps) };
+      recordEvent('throttle', `⚡ Car reduced charge rate: asked ${carReqAmps} A, drawing ${Math.round(actualAmps)} A (voltage drop)`);
+    }
+  } else {
+    throttleStreak = 0;
+    if (throttleLatch) {
+      if (!connected) {
+        throttleLatch = null; throttleClearSince = null; // replug resets the car's limit
+      } else if (isCharging && actualAmps != null && carReqAmps != null &&
+                 carReqAmps >= throttleLatch.requestA - 1 && carReqAmps - actualAmps <= 1) {
+        // Back at (or above) the rate that originally sagged — clear after 5 min sustained.
+        if (!throttleClearSince) throttleClearSince = Date.now();
+        if (Date.now() - throttleClearSince > 5 * 60_000) { throttleLatch = null; throttleClearSince = null; }
+      } else {
+        throttleClearSince = null;
+      }
+    }
+  }
+  const throttled = gapNow ? throttleStreak >= 2 : !!throttleLatch;
   const enoughToCharge = surplusW >= C.minAmps * voltage - C.resumeMarginWatts;
-  return { voltage, chargeW, isCharging, connected, surplusW, ampCeiling, targetAmps, actualAmps, commandedAmps, throttled, enoughToCharge, standbyW };
+  return { voltage, chargeW, isCharging, connected, surplusW, ampCeiling, targetAmps, actualAmps, commandedAmps, throttled, throttleInfo: throttleLatch, enoughToCharge, standbyW };
 }
 
 function setComputed(meters, d) {
@@ -252,6 +287,7 @@ function setComputed(meters, d) {
     commandedAmps: d.commandedAmps,
     actualAmps: d.actualAmps,
     throttled: d.throttled,
+    throttleInfo: d.throttleInfo, // latched { since, requestA, actualA } while active
     minAmps: C.minAmps,
     // Amps the current surplus could sustain (0 if below the minimum to charge).
     potentialAmps: clamp(Math.floor(d.surplusW / d.voltage), 0, d.ampCeiling),

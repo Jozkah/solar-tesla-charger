@@ -204,6 +204,12 @@ function renderCards(s) {
   const volt = comp?.voltage || 230;
   // What we COULD charge at from current surplus (no min clamp, so it can read 0).
   const potential = comp ? clampN(Math.floor((comp.surplusW || 0) / volt), 0, comp.ampCeiling || 32) : 0;
+  const unitEl = $('chargeUnit');
+  if (unitEl) unitEl.textContent = 'A';
+  const standbyW = comp?.standbyW || 0;
+  const climateLabel = car?.climateOn
+    ? ((car.outsideTemp ?? 20) >= 18 ? '❄️ cooling' : '🔥 heating')
+    : '⚙️ conditioning';
   let cs;
   if (s.charging) {
     $('chargeAmps').textContent = actual ?? commanded ?? '?';
@@ -217,16 +223,18 @@ function renderCards(s) {
     if (s.wc && !s.wc.error && s.wc.sessionWh != null) cs += ` · ${(s.wc.sessionWh / 1000).toFixed(1)} kWh`;
   } else if (s.fullCharge || car?.batteryLevel >= 100) {
     $('chargeAmps').textContent = 'Full';
-    cs = `🔋 fully charged · auto paused until you start it or battery ≤ ${s.fullResumeSoc ?? 92}%`;
+    if (unitEl) unitEl.textContent = '';
+    cs = '🔋 charged';
+    if (standbyW > 100) cs += ` · ${climateLabel} · ${comp?.actualAmps != null ? Math.round(comp.actualAmps) + 'A · ' : ''}${fmtW(standbyW)} W`;
+    else cs += ` · auto resumes ≤ ${s.fullResumeSoc ?? 92}% or on Start`;
   } else {
     $('chargeAmps').textContent = 0;
     const connected = (s.wc && !s.wc.error) ? s.wc.connected : car?.pluggedIn;
     cs = connected ? 'plugged in' : 'unplugged';
-    const standbyW = comp?.standbyW || 0;
     if (connected && standbyW > 100) {
-      // Plugged in, not charging, but the car is drawing power for battery/cabin
-      // conditioning or Sentry — show it so the draw is accounted for, not "charging".
-      cs += ` · ❄️ conditioning, drawing ${fmtW(standbyW)} W`;
+      // Plugged in, not charging, but the car is drawing power for climate/battery
+      // conditioning or Sentry — show the draw so it isn't mistaken for a charge.
+      cs += ` · ${climateLabel} · ${comp?.actualAmps != null ? Math.round(comp.actualAmps) + 'A · ' : ''}${fmtW(standbyW)} W`;
     } else {
       cs += potential > 0 ? ` · could charge at ${potential}A from sun` : ' · not enough sun';
     }

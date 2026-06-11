@@ -539,6 +539,8 @@ async function controlCycle() {
       } else {
         action = `hold ${current}A`;
         appliedAmps = current;
+        // A previously failed command is moot once the car is already at target.
+        if (state.lastError && state.lastError.startsWith('cmd ')) state.lastError = null;
       }
     }
   }

@@ -208,7 +208,10 @@ function renderCards(s) {
   if (s.charging) {
     $('chargeAmps').textContent = actual ?? commanded ?? '?';
     cs = `${fmtW(comp?.chargeW)} W`;
-    if (comp?.throttled) cs = `set ${commanded}→${actual}A (V drop)`;
+    if (comp?.throttled) {
+      const ti = comp.throttleInfo;
+      cs = ti ? `car cut ${ti.requestA}→${ti.actualA}A (V drop)` : `set ${commanded}→${actual}A (V drop)`;
+    }
     if (car?.batteryLevel != null) cs += ` · ${car.batteryLevel}%${car.chargeLimitSoc ? `→${car.chargeLimitSoc}%` : ''}`;
     if (car?.timeToFull > 0) cs += ` · ${fmtEta(car.timeToFull)}`;
     if (s.wc && !s.wc.error && s.wc.sessionWh != null) cs += ` · ${(s.wc.sessionWh / 1000).toFixed(1)} kWh`;
@@ -406,7 +409,12 @@ function renderBanner(s) {
   if (comp?.solarCouldChargeFaster && s.override) msgs.push(`☀️ Solar could charge faster — surplus supports ${comp.potentialAmps}A vs your ${s.override.amps}A override. Tap “Auto” to use the free solar.`);
   if (comp?.scheduleActive) msgs.push(`🌙 Scheduled charge active — charging from grid at ${s.schedule?.amps}A.`);
   if (comp?.insufficientSolar) msgs.push('⛅ Charging stopped — not enough solar energy.');
-  if (comp?.throttled) msgs.push(`⚡ Car throttling to ${comp.actualAmps}A (set ${comp.commandedAmps}A) — line voltage dropping under load.`);
+  if (comp?.throttled) {
+    const ti = comp.throttleInfo;
+    msgs.push(ti
+      ? `⚡ Charge rate reduced by the car at ${new Date(ti.since).toLocaleTimeString()} (asked ${ti.requestA}A, got ${ti.actualA}A) — line voltage dropped under load. Usually persists until replug.`
+      : `⚡ Car throttling to ${comp.actualAmps}A (set ${comp.commandedAmps}A) — line voltage dropping under load.`);
+  }
   b.hidden = !msgs.length;
   b.innerHTML = msgs.join('<br>');
 }

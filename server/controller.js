@@ -252,8 +252,12 @@ function computeDecision(meters, car, wc) {
   // car snapshot right after WE lowered the command doesn't false-positive
   // (real throttle = actual is also well below what we last set).
   const carReqAmps = car?.chargeCurrentRequest ?? commandedAmps;
+  // Ignore while a throttle reset is cycling the session, and ignore sub-minAmps
+  // readings — a genuine throttle trims ~25% (e.g. 20→15 A); near-zero amps is a
+  // stop/start ramp, not a throttle.
   const gapNow =
     isCharging && actualAmps != null && carReqAmps != null &&
+    !throttleResetStopAt && actualAmps >= C.minAmps - 0.5 &&
     carReqAmps - actualAmps >= 2 &&
     (lastSetAmps == null || actualAmps <= lastSetAmps - 2);
   if (gapNow) {

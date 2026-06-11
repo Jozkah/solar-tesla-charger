@@ -213,6 +213,10 @@ let throttleStreak = 0;
 let throttleLatch = null; // { since, requestA, actualA }
 let throttleClearSince = null;
 let throttleHoldUntil = 0; // while in the future, don't raise amps above the latched rate
+// The car's voltage-drop limiter persists for the whole charge session, but a
+// stop→start cycle resets it to full amps (same as the phone app, no replug).
+let throttleResetStopAt = 0; // ts of the reset's chargeStop; 0 = no reset in flight
+const THROTTLE_RESET_WAIT_MS = 30_000;
 
 // Pure computation shared by both loops. The Wall Connector (wc) is the preferred
 // source for actual current / voltage / charging+plugged state when available.
@@ -441,7 +445,30 @@ async function controlCycle() {
     const desired = eff ? eff.amps : d.targetAmps;
     const haveSurplusToStart = d.surplusW >= C.minAmps * d.voltage - C.resumeMarginWatts;
 
-    if (!eff && C.stopWhenInsufficient && !haveSurplusToStart) {
+    if (throttleResetStopAt) {
+      // Throttle-reset in flight: we stopped the charge; restart after a short
+      // pause and re-ramp. Abandon if it somehow lingers (e.g. car went away).
+      if (now - throttleResetStopAt > 5 * 60_000) {
+        throttleResetStopAt = 0;
+        action = 'throttle reset abandoned';
+      } else if (now - throttleResetStopAt >= THROTTLE_RESET_WAIT_MS) {
+        throttleResetStopAt = 0;
+        throttleStreak = 0;
+        await safeCmd('restart charge (throttle reset)', () => tesla.chargeStart());
+        action = await safeCmd(`set ${desired}A (throttle reset)`, () => tesla.setChargingAmps(desired));
+        appliedAmps = desired;
+        lastSetAmps = desired;
+        bumpAdjustments();
+      } else {
+        action = 'throttle reset: brief charge pause';
+      }
+    } else if (!eff && throttleLatch && now >= throttleHoldUntil && d.isCharging &&
+               haveSurplusToStart && desired >= throttleLatch.actualA + 2) {
+      // Cooldown over and we want materially more than the car accepted —
+      // cycle the session to clear the limiter instead of just asking again.
+      throttleResetStopAt = now;
+      action = await safeCmd('stop charge (throttle reset)', () => tesla.chargeStop());
+    } else if (!eff && C.stopWhenInsufficient && !haveSurplusToStart) {
       if (d.isCharging) action = await safeCmd('stop charge (not enough sun)', () => tesla.chargeStop());
       else action = 'idle (not enough sun)';
     } else {

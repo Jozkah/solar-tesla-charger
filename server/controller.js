@@ -231,6 +231,54 @@ let chargeStartedAt = 0;
 let wasCharging = false;
 let lastConnSeen = null; // WC plugged state, to detect replug and refresh the car
 
+// --- Battery capacity auto-estimate ------------------------------------------
+// Learned from real charges: capacity ≈ charge_energy_added / SoC gained (the
+// same math TeslaMate uses). Segments with ≥10% SoC gain are kept (last 10),
+// the median wins. Config batteryKwh is only the fallback until enough data.
+const BATTERY_FILE = path.join(config.paths.root, 'data', 'battery.json');
+let capEstimates = [];
+(function loadBattery() {
+  try {
+    const b = JSON.parse(fs.readFileSync(BATTERY_FILE, 'utf8'));
+    if (Array.isArray(b.estimates)) capEstimates = b.estimates;
+  } catch { /* none yet */ }
+})();
+function persistBattery() {
+  try {
+    fs.mkdirSync(path.dirname(BATTERY_FILE), { recursive: true });
+    fs.writeFileSync(BATTERY_FILE, JSON.stringify({ estimates: capEstimates }, null, 2));
+  } catch { /* best effort */ }
+}
+function autoBatteryKwh() {
+  if (capEstimates.length < 2) return null; // trust it only after a few charges
+  const s = capEstimates.map((e) => e.kwh).sort((a, b) => a - b);
+  return s[Math.floor(s.length / 2)];
+}
+let capSeg = null; // { soc0, e0, soc1, e1 } for the charge segment in progress
+function finalizeCapSeg() {
+  if (!capSeg) return;
+  const dSoc = capSeg.soc1 - capSeg.soc0, dE = capSeg.e1 - capSeg.e0;
+  capSeg = null;
+  if (dSoc >= 10 && dE > 0) {
+    const kwh = +((dE / dSoc) * 100).toFixed(1);
+    if (kwh > 30 && kwh < 130) { // sanity band
+      capEstimates.push({ ts: Date.now(), kwh, dSoc });
+      if (capEstimates.length > 10) capEstimates = capEstimates.slice(-10);
+      persistBattery();
+    }
+  }
+}
+function trackCapacity(car, isCharging) {
+  const soc = car?.batteryLevel, e = car?.chargeEnergyAdded;
+  if (isCharging && soc != null && e != null) {
+    // energy counter dropped = the car started a new session — close the old segment
+    if (!capSeg || e < capSeg.e1 - 0.05) { finalizeCapSeg(); capSeg = { soc0: soc, e0: e, soc1: soc, e1: e }; }
+    else { capSeg.soc1 = soc; capSeg.e1 = e; }
+  } else if (capSeg) {
+    finalizeCapSeg();
+  }
+}
+
 // Pure computation shared by both loops. The Wall Connector (wc) is the preferred
 // source for actual current / voltage / charging+plugged state when available.
 function computeDecision(meters, car, wc) {
@@ -339,7 +387,8 @@ function setComputed(meters, d) {
     actualAmps: d.actualAmps,
     throttled: d.throttled,
     throttleInfo: d.throttleInfo, // latched { since, requestA, actualA } while active
-    batteryKwh: C.batteryKwh ?? 60, // usable pack size for the kWh estimate (config)
+    batteryKwh: autoBatteryKwh() ?? C.batteryKwh ?? 60, // learned from charges, config fallback
+    batteryKwhLearned: autoBatteryKwh() != null,
     minAmps: C.minAmps,
     // Amps the current surplus could sustain (0 if below the minimum to charge).
     potentialAmps: clamp(Math.floor(d.surplusW / d.voltage), 0, d.ampCeiling),
@@ -547,6 +596,7 @@ async function controlCycle() {
   }
 
   state.lastAction = action;
+  trackCapacity(car, d.isCharging);
   state.fullCharge = fullChargeLatch;
   state.fullResumeSoc = C.fullResumeSoc ?? 92;
   await manageChargeLimit(d, now);

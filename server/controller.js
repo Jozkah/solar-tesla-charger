@@ -418,6 +418,7 @@ function setComputed(meters, d) {
     actualAmps: d.actualAmps,
     throttled: d.throttled,
     throttleInfo: d.throttleInfo, // latched { since, requestA, actualA } while active
+    batteryKwh: C.batteryKwh ?? 60, // usable pack size for the kWh estimate (config)
     minAmps: C.minAmps,
     potentialAmps,
     solarCouldChargeFaster,

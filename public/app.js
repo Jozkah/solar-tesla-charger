@@ -70,6 +70,7 @@ function applyWeatherBg(w) {
 
 let range = 'today';
 let lastState = null;
+let bannerDismissed = null; // banner content signature the user tapped away
 let chartData = []; // {ts, exportW, importW, chargeW, solarW}
 let chartHours = 1; // selected chart range in hours
 let WINDOW_MS = 3600_000; // chart window, derived from chartHours
@@ -419,8 +420,13 @@ function renderBanner(s) {
       ? `⚡ Car reduced the charge rate at ${new Date(ti.since).toLocaleTimeString()} (asked ${ti.requestA}A, got ${ti.actualA}A — voltage drop). ${ti.holdUntil > Date.now() ? `Holding ≤${ti.actualA}A, retrying at ${new Date(ti.holdUntil).toLocaleTimeString()}.` : 'Retrying now…'}`
       : `⚡ Car throttling to ${comp.actualAmps}A (set ${comp.commandedAmps}A) — line voltage dropping under load.`);
   }
-  b.hidden = !msgs.length;
+  // Tap the banner to dismiss it; it reappears only when its content changes.
+  const sig = msgs.join('|');
+  if (bannerDismissed && bannerDismissed !== sig) bannerDismissed = null;
+  b.hidden = !msgs.length || bannerDismissed === sig;
   b.innerHTML = msgs.join('<br>');
+  b.style.cursor = 'pointer';
+  b.onclick = () => { bannerDismissed = sig; b.hidden = true; };
 }
 
 // --- Chart ------------------------------------------------------------------

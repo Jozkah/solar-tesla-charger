@@ -492,7 +492,9 @@ async function controlCycle() {
     const haveSurplusToStart = d.surplusW >= C.minAmps * d.voltage - C.resumeMarginWatts;
 
     const soc = car?.batteryLevel;
-    if (soc != null && soc >= 100) {
+    // Only treat as full once the car actually FINISHES (it trickle-balances at
+    // "100%" for a while) — latching mid-charge would fight the car's own finish.
+    if (soc != null && soc >= 100 && !d.isCharging) {
       if (!fullChargeLatch) {
         fullChargeLatch = true;
         recordEvent('full', '🔋 Car fully charged — automatic charging paused');

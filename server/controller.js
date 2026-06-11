@@ -212,6 +212,7 @@ function clamp(n, lo, hi) {
 let throttleStreak = 0;
 let throttleLatch = null; // { since, requestA, actualA }
 let throttleClearSince = null;
+let throttleHoldUntil = 0; // while in the future, don't raise amps above the latched rate
 
 // Pure computation shared by both loops. The Wall Connector (wc) is the preferred
 // source for actual current / voltage / charging+plugged state when available.
@@ -236,6 +237,11 @@ function computeDecision(meters, car, wc) {
   let ampCeiling = C.maxAmps;
   if (carMax && carMax > 0) ampCeiling = Math.min(ampCeiling, carMax); // car/circuit limit
   if (state.maxAmps) ampCeiling = Math.min(ampCeiling, state.maxAmps); // user-set auto cap
+  // After a throttle, hold at the rate the car accepted instead of re-probing the
+  // sag point every cycle; the cap lifts when the cooldown expires (re-probe).
+  if (throttleLatch && Date.now() < throttleHoldUntil) {
+    ampCeiling = Math.min(ampCeiling, Math.max(C.minAmps, throttleLatch.actualA));
+  }
   const targetAmps = clamp(Math.floor(surplusW / voltage), C.minAmps, ampCeiling);
   // Voltage-drop throttle, read from the car's own report: it draws materially
   // fewer amps than its charge_current_request. Guard with lastSetAmps so a stale
@@ -249,20 +255,28 @@ function computeDecision(meters, car, wc) {
   if (gapNow) {
     throttleStreak++;
     throttleClearSince = null;
-    if (throttleStreak >= 2 && !throttleLatch) {
-      throttleLatch = { since: Date.now(), requestA: carReqAmps, actualA: Math.round(actualAmps) };
-      recordEvent('throttle', `⚡ Car reduced charge rate: asked ${carReqAmps} A, drawing ${Math.round(actualAmps)} A (voltage drop)`);
+    if (throttleStreak >= 2) {
+      if (!throttleLatch) {
+        throttleLatch = { since: Date.now(), requestA: carReqAmps, actualA: Math.round(actualAmps) };
+        recordEvent('throttle', `⚡ Car reduced charge rate: asked ${carReqAmps} A, drawing ${Math.round(actualAmps)} A (voltage drop)`);
+      } else {
+        // Re-throttled during a probe — update to the freshly accepted rate.
+        throttleLatch.requestA = carReqAmps;
+        throttleLatch.actualA = Math.round(actualAmps);
+      }
+      throttleHoldUntil = Date.now() + (C.throttleCooldownMin ?? 10) * 60_000;
     }
   } else {
     throttleStreak = 0;
     if (throttleLatch) {
       if (!connected) {
-        throttleLatch = null; throttleClearSince = null; // replug resets the car's limit
-      } else if (isCharging && actualAmps != null && carReqAmps != null &&
-                 carReqAmps >= throttleLatch.requestA - 1 && carReqAmps - actualAmps <= 1) {
-        // Back at (or above) the rate that originally sagged — clear after 5 min sustained.
+        throttleLatch = null; throttleClearSince = null; throttleHoldUntil = 0; // replug resets
+      } else if (Date.now() >= throttleHoldUntil && isCharging && actualAmps != null &&
+                 carReqAmps != null && carReqAmps - actualAmps <= 1) {
+        // Cooldown over and the car takes what we ask again — clear after 3 min
+        // sustained so the banner disappears once the re-probe works.
         if (!throttleClearSince) throttleClearSince = Date.now();
-        if (Date.now() - throttleClearSince > 5 * 60_000) { throttleLatch = null; throttleClearSince = null; }
+        if (Date.now() - throttleClearSince > 3 * 60_000) { throttleLatch = null; throttleClearSince = null; }
       } else {
         throttleClearSince = null;
       }
@@ -270,7 +284,8 @@ function computeDecision(meters, car, wc) {
   }
   const throttled = gapNow ? throttleStreak >= 2 : !!throttleLatch;
   const enoughToCharge = surplusW >= C.minAmps * voltage - C.resumeMarginWatts;
-  return { voltage, chargeW, isCharging, connected, surplusW, ampCeiling, targetAmps, actualAmps, commandedAmps, throttled, throttleInfo: throttleLatch, enoughToCharge, standbyW };
+  const throttleInfo = throttleLatch ? { ...throttleLatch, holdUntil: throttleHoldUntil } : null;
+  return { voltage, chargeW, isCharging, connected, surplusW, ampCeiling, targetAmps, actualAmps, commandedAmps, throttled, throttleInfo, enoughToCharge, standbyW };
 }
 
 function setComputed(meters, d) {

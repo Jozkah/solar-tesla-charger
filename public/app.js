@@ -369,7 +369,7 @@ function renderBanner(s) {
   if (comp?.throttled) {
     const ti = comp.throttleInfo;
     msgs.push(ti
-      ? `⚡ Charge rate reduced by the car at ${new Date(ti.since).toLocaleTimeString()} (asked ${ti.requestA}A, got ${ti.actualA}A) — line voltage dropped under load. Usually persists until replug.`
+      ? `⚡ Car reduced the charge rate at ${new Date(ti.since).toLocaleTimeString()} (asked ${ti.requestA}A, got ${ti.actualA}A — voltage drop). ${ti.holdUntil > Date.now() ? `Holding ≤${ti.actualA}A, retrying at ${new Date(ti.holdUntil).toLocaleTimeString()}.` : 'Retrying now…'}`
       : `⚡ Car throttling to ${comp.actualAmps}A (set ${comp.commandedAmps}A) — line voltage dropping under load.`);
   }
   b.hidden = !msgs.length;

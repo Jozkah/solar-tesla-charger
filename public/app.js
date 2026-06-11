@@ -232,7 +232,7 @@ function renderCards(s) {
     if (unitEl) unitEl.textContent = '';
     cs = '🔋 charged';
     if (standbyW > 100) cs += ` · ${climateLabel} · ${comp?.actualAmps != null ? Math.round(comp.actualAmps) + 'A · ' : ''}${fmtW(standbyW)} W`;
-    else cs += ` · auto resumes ≤ ${s.fullResumeSoc ?? 92}% or on Start`;
+    else cs += ` · charges again < ${s.fullResumeSoc ?? 92}%`;
   } else {
     $('chargeAmps').textContent = 0;
     cs = connected ? 'plugged in' : 'unplugged';
@@ -252,6 +252,7 @@ function renderCards(s) {
     let targetVal, targetSub;
     if (s.override) { targetVal = s.override.amps; targetSub = 'manual override'; }
     else if (comp.scheduleActive) { targetVal = s.schedule?.amps ?? comp.targetAmps; targetSub = 'scheduled charge'; }
+    else if (isFull) { targetVal = 0; targetSub = 'car is full'; }
     else if (comp.enoughToCharge) { targetVal = comp.targetAmps; targetSub = `${fmtW(comp.surplusW)} W from sun`; }
     else { targetVal = 0; targetSub = 'not enough sun'; }
     $('targetAmps').textContent = targetVal;

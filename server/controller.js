@@ -239,8 +239,8 @@ function computeDecision(meters, car, wc) {
   // WC reports a real ≥minAmps draw that is NOT charging. The WC heuristic only
   // applies when car telemetry is unavailable.
   const carState = car?.chargingState;
-  const isCharging = carState === 'Charging' || carState === 'Starting'
-    || (carState == null && wcOk && wc.charging && wcCurrent >= (C.minAmps - 0.5));
+  const isCharging = !!(carState === 'Charging' || carState === 'Starting'
+    || (carState == null && wcOk && wc.charging && wcCurrent >= (C.minAmps - 0.5)));
   const connected = wcOk ? wc.connected : !!car?.pluggedIn;
   // Plugged in, not charging, but still drawing power = conditioning / Sentry / standby.
   const standbyW = connected && !isCharging && wcOk && wc.power > 100 ? Math.round(wc.power) : 0;

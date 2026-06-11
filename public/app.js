@@ -215,6 +215,9 @@ function renderCards(s) {
     if (car?.batteryLevel != null) cs += ` · ${car.batteryLevel}%${car.chargeLimitSoc ? `→${car.chargeLimitSoc}%` : ''}`;
     if (car?.timeToFull > 0) cs += ` · ${fmtEta(car.timeToFull)}`;
     if (s.wc && !s.wc.error && s.wc.sessionWh != null) cs += ` · ${(s.wc.sessionWh / 1000).toFixed(1)} kWh`;
+  } else if (s.fullCharge || car?.batteryLevel >= 100) {
+    $('chargeAmps').textContent = 'Full';
+    cs = `🔋 fully charged · auto paused until you start it or battery ≤ ${s.fullResumeSoc ?? 92}%`;
   } else {
     $('chargeAmps').textContent = 0;
     const connected = (s.wc && !s.wc.error) ? s.wc.connected : car?.pluggedIn;
@@ -408,7 +411,8 @@ function renderBanner(s) {
   if (s.override) msgs.push(`Override: holding ${s.override.amps}A` + (s.override.expiresAt ? ` until ${new Date(s.override.expiresAt).toLocaleTimeString()}` : ''));
   if (comp?.solarCouldChargeFaster && s.override) msgs.push(`☀️ Solar could charge faster — surplus supports ${comp.potentialAmps}A vs your ${s.override.amps}A override. Tap “Auto” to use the free solar.`);
   if (comp?.scheduleActive) msgs.push(`🌙 Scheduled charge active — charging from grid at ${s.schedule?.amps}A.`);
-  if (comp?.insufficientSolar) msgs.push('⛅ Charging stopped — not enough solar energy.');
+  if (s.fullCharge) msgs.push(`🔋 Car fully charged — automatic charging paused until you start a charge or the battery drops to ${s.fullResumeSoc ?? 92}%.`);
+  if (comp?.insufficientSolar && !s.fullCharge) msgs.push('⛅ Charging stopped — not enough solar energy.');
   if (comp?.throttled) {
     const ti = comp.throttleInfo;
     msgs.push(ti

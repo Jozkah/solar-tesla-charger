@@ -246,11 +246,20 @@ async function manageChargeLimit(d, now) {
       if (now - boostIdleSince < BOOST_REVERT_DELAY_MS) return;
     }
     const restore = savedChargeLimit != null ? clamp(savedChargeLimit, 50, 100) : null;
-    state.limitBoosted = false;
-    savedChargeLimit = null;
-    boostIdleSince = 0;
-    persistBoost();
-    if (restore != null) await safeCmd(`revert charge limit →${restore}% (${reason})`, () => tesla.setChargeLimit(restore));
+    if (restore == null || carLimit <= restore) {
+      // Nothing to undo (no stash, or the car is already at/below the user's
+      // limit because they set it themselves) — just drop the flag.
+      state.limitBoosted = false; savedChargeLimit = null; boostIdleSince = 0; persistBoost();
+      return;
+    }
+    // Don't wake a sleeping car just to set a limit; wait until it's awake.
+    if (state.car?.stale) return;
+    // Issue the revert FIRST and only forget we were boosted once it succeeds —
+    // a failed command (car asleep/offline) must NOT orphan the limit at 100%.
+    const r = await safeCmd(`revert charge limit →${restore}% (${reason})`, () => tesla.setChargeLimit(restore));
+    if (!String(r).startsWith('failed')) {
+      state.limitBoosted = false; savedChargeLimit = null; boostIdleSince = 0; persistBoost();
+    }
   }
 }
 export async function manualCharge(action) {

@@ -305,8 +305,12 @@ function computeDecision(meters, car, wc) {
   // conditioning power (battery heat/cool, cabin preheat, Sentry) that keeps the WC
   // contactor closed and otherwise looks like a charge.
   const wcCurrent = wcOk ? (wc.currentA || 0) : 0;
-  const isCharging = car?.chargingState === 'Charging'
-    || (wcOk && wc.charging && wcCurrent >= (C.minAmps - 0.5));
+  // Trust the car's state when we have it: with climate/AC on while plugged the
+  // WC reports a real ≥minAmps draw that is NOT charging. The WC heuristic only
+  // applies when car telemetry is unavailable.
+  const carState = car?.chargingState;
+  const isCharging = carState === 'Charging' || carState === 'Starting'
+    || (carState == null && wcOk && wc.charging && wcCurrent >= (C.minAmps - 0.5));
   const connected = wcOk ? wc.connected : !!car?.pluggedIn;
   // Plugged in, not charging, but still drawing power = conditioning / Sentry / standby.
   const standbyW = connected && !isCharging && wcOk && wc.power > 100 ? Math.round(wc.power) : 0;
@@ -357,6 +361,10 @@ function computeDecision(meters, car, wc) {
     if (throttleLatch) {
       if (!connected) {
         throttleLatch = null; throttleClearSince = null; throttleHoldUntil = 0; // replug resets
+      } else if (!isCharging && !throttleResetStopAt) {
+        // Charge session ended (complete/stopped) — the car's limiter dies with
+        // the session, so the banner shouldn't outlive it.
+        throttleLatch = null; throttleClearSince = null; throttleHoldUntil = 0;
       } else if (Date.now() >= throttleHoldUntil && isCharging && actualAmps != null &&
                  carReqAmps != null && carReqAmps - actualAmps <= 1) {
         // Cooldown over and the car takes what we ask again — clear after 3 min

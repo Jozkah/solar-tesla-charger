@@ -62,6 +62,7 @@
     "channel": "auto"
   },
   "control": {
+    "batteryKwh": 60,
     "pollIntervalSec": 10,
     "livePollSec": 2,
     "carPollSec": 90,

@@ -195,7 +195,11 @@ export function setAllowLimitIncrease(on) {
   return state.allowLimitIncrease;
 }
 export async function manualCharge(action) {
-  if (action === 'start') return tesla.chargeStart();
+  if (action === 'start') {
+    fullChargeLatch = false; // user explicitly wants to charge
+    state.fullCharge = false;
+    return tesla.chargeStart();
+  }
   if (action === 'stop') return tesla.chargeStop();
   throw new Error('action must be start|stop');
 }
@@ -217,6 +221,10 @@ let throttleHoldUntil = 0; // while in the future, don't raise amps above the la
 // stop→start cycle resets it to full amps (same as the phone app, no replug).
 let throttleResetStopAt = 0; // ts of the reset's chargeStop; 0 = no reset in flight
 const THROTTLE_RESET_WAIT_MS = 30_000;
+// Once the battery hits 100% stop driving the car entirely: no start commands,
+// no amp changes. Cleared by a manual start/override or once the battery is
+// actually used again (drops to fullResumeSoc, default 92%).
+let fullChargeLatch = false;
 
 // Pure computation shared by both loops. The Wall Connector (wc) is the preferred
 // source for actual current / voltage / charging+plugged state when available.
@@ -449,7 +457,20 @@ async function controlCycle() {
     const desired = eff ? eff.amps : d.targetAmps;
     const haveSurplusToStart = d.surplusW >= C.minAmps * d.voltage - C.resumeMarginWatts;
 
-    if (throttleResetStopAt) {
+    const soc = car?.batteryLevel;
+    if (soc != null && soc >= 100) {
+      if (!fullChargeLatch) {
+        fullChargeLatch = true;
+        recordEvent('full', '🔋 Car fully charged — automatic charging paused');
+      }
+    } else if (fullChargeLatch && soc != null && soc <= (C.fullResumeSoc ?? 92)) {
+      fullChargeLatch = false; // battery was used — resume solar-auto
+    }
+    if (eff) fullChargeLatch = false; // manual override/schedule = explicit user intent
+
+    if (fullChargeLatch) {
+      action = 'car full — auto charging paused';
+    } else if (throttleResetStopAt) {
       // Throttle-reset in flight: we stopped the charge; restart after a short
       // pause and re-ramp. Abandon if it somehow lingers (e.g. car went away).
       if (now - throttleResetStopAt > 5 * 60_000) {
@@ -493,6 +514,8 @@ async function controlCycle() {
   }
 
   state.lastAction = action;
+  state.fullCharge = fullChargeLatch;
+  state.fullResumeSoc = C.fullResumeSoc ?? 92;
   await manageChargeLimit(d, now);
   trackSession(now, d.isCharging, d.chargeW, appliedAmps, meters);
 

@@ -89,8 +89,11 @@
     background:linear-gradient(to top, #0e0f12 30%, rgba(14,15,18,0)); -webkit-backdrop-filter:blur(2px); backdrop-filter:blur(2px);
     border-bottom-left-radius:24px; border-bottom-right-radius:24px; }
   .navlink { font-size:13px; font-weight:600; color:#9a9aa2; text-decoration:none; }
-  /* kill iOS rubber-band bounce (it reveals the fixed weather backdrop above the header) */
-  html, body { overscroll-behavior-y:none; overscroll-behavior:none; background:#050505; }
+  /* kill iOS rubber-band bounce (it reveals the fixed weather backdrop above the header).
+     bg goes on html only: an opaque body background would paint OVER the z-index:-30 image. */
+  html, body { overscroll-behavior-y:none; overscroll-behavior:none; }
+  html { background:#050505; }
+  body { background:transparent; }
   #bgWeather { position:fixed; inset:0; z-index:-30; background-size:cover; background-position:center; opacity:0; transition:opacity 1.5s ease; pointer-events:none; }
   #bgWeather.on { opacity:1; }
 </style>

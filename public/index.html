@@ -73,8 +73,11 @@
   .tooltip .t-time { color:var(--mut,#9a9aa2); margin-bottom:4px; font-size:11px; opacity:.7; }
   .tooltip .t-row { display:flex; align-items:center; gap:6px; }
   .tooltip .t-row i { width:8px; height:8px; border-radius:2px; }
-  /* kill iOS rubber-band bounce (it reveals the fixed weather backdrop above the header) */
-  html, body { overscroll-behavior-y:none; overscroll-behavior:none; background:#050505; }
+  /* kill iOS rubber-band bounce (it reveals the fixed weather backdrop above the header).
+     bg goes on html only: an opaque body background would paint OVER the z-index:-30 image. */
+  html, body { overscroll-behavior-y:none; overscroll-behavior:none; }
+  html { background:#050505; }
+  body { background:transparent; }
   #bgWeather { position:fixed; inset:0; z-index:-30; background-size:cover; background-position:center; opacity:0; transition:opacity 1.5s ease; pointer-events:none; }
   #bgWeather.on { opacity:1; }
 </style>

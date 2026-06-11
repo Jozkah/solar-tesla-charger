@@ -337,7 +337,9 @@ function renderDetail(s) {
   add('Charger temp', C(wc.pcbaTempC));
   add('Cabin', C(car.insideTemp));
   add('Outside', C(car.outsideTemp));
-  add('Battery', car.batteryLevel != null ? car.batteryLevel : null, '%');
+  const packKwh = s.computed?.batteryKwh ?? 60;
+  add('Battery', car.batteryLevel != null
+    ? `${car.batteryLevel}% · ${(car.batteryLevel / 100 * packKwh).toFixed(1)}` : null, 'kWh');
   add('Range', car.estRangeKm != null ? Math.round(car.estRangeKm) : null, 'km');
   add('To full', s.charging && car.timeToFull > 0 ? fmtEta(car.timeToFull) : null);
 

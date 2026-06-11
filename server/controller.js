@@ -295,6 +295,11 @@ const THROTTLE_RESET_WAIT_MS = 30_000;
 // no amp changes. Cleared by a manual start/override or once the battery is
 // actually used again (drops to fullResumeSoc, default 92%).
 let fullChargeLatch = false;
+// Soft-start: pushing high amps right after plug-in/start trips the charger
+// (drops to 0 A). Track when the current charge began and cap the ramp.
+let chargeStartedAt = 0;
+let wasCharging = false;
+let lastConnSeen = null; // WC plugged state, to detect replug and refresh the car
 
 // Pure computation shared by both loops. The Wall Connector (wc) is the preferred
 // source for actual current / voltage / charging+plugged state when available.
@@ -314,6 +319,8 @@ function computeDecision(meters, car, wc) {
   const connected = wcOk ? wc.connected : !!car?.pluggedIn;
   // Plugged in, not charging, but still drawing power = conditioning / Sentry / standby.
   const standbyW = connected && !isCharging && wcOk && wc.power > 100 ? Math.round(wc.power) : 0;
+  if (isCharging && !wasCharging) chargeStartedAt = Date.now();
+  wasCharging = isCharging;
   const voltage = pickVoltage(meters, car, wc);
   const actualAmps = (wcOk ? wc.currentA : car?.chargerActualCurrent) ?? null;
   const chargeW = wcOk && wc.power != null ? wc.power : computeChargeW(car, voltage);
@@ -327,6 +334,11 @@ function computeDecision(meters, car, wc) {
   // sag point every cycle; the cap lifts when the cooldown expires (re-probe).
   if (throttleLatch && Date.now() < throttleHoldUntil) {
     ampCeiling = Math.min(ampCeiling, Math.max(C.minAmps, throttleLatch.actualA));
+  }
+  // Soft-start ramp: hold ≤ rampMaxAmps for the first rampUpMin minutes of any
+  // charge — jumping straight to 20 A on a fresh plug-in trips the charger.
+  if (isCharging && chargeStartedAt && Date.now() - chargeStartedAt < (C.rampUpMin ?? 5) * 60_000) {
+    ampCeiling = Math.min(ampCeiling, Math.max(C.minAmps, C.rampMaxAmps ?? 15));
   }
   const targetAmps = clamp(Math.floor(surplusW / voltage), C.minAmps, ampCeiling);
   // Voltage-drop throttle, read from the car's own report: it draws materially
@@ -467,6 +479,13 @@ async function carCycle() {
 async function controlCycle() {
   const now = Date.now();
   state.lastCycleAt = now;
+  // Plug state changed (e.g. replugged after a drive) — refresh car telemetry
+  // right away so SoC/limit aren't minutes stale.
+  const connNow = state.wc && !state.wc.error ? state.wc.connected : null;
+  if (connNow != null && lastConnSeen != null && connNow !== lastConnSeen) {
+    await carCycle();
+  }
+  if (connNow != null) lastConnSeen = connNow;
   const car = state.car; // refreshed by carCycle (gentle); WC drives the live signal
   const meters = state.meters;
   if (!meters) {
@@ -489,6 +508,7 @@ async function controlCycle() {
   } else if (!state.teslaConfigured) {
     action = 'tesla not configured';
   } else if (!d.connected) {
+    fullChargeLatch = false; // unplugged — the "full" pause belongs to that plug session
     action = 'not plugged in';
   } else {
     // A scheduled window forces a fixed grid charge (ignores solar). A manual

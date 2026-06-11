@@ -205,6 +205,12 @@ function renderCards(s) {
   const volt = comp?.voltage || 230;
   // What we COULD charge at from current surplus (no min clamp, so it can read 0).
   const potential = comp ? clampN(Math.floor((comp.surplusW || 0) / volt), 0, comp.ampCeiling || 32) : 0;
+  const connected = (s.wc && !s.wc.error) ? s.wc.connected : car?.pluggedIn;
+  const isFull = (s.fullCharge || car?.batteryLevel >= 100) && !!connected;
+  // Status-colored charging icon: red unplugged, blue charging, green full,
+  // orange throttled, grey plugged-but-idle.
+  const icEl = $('ic-charge');
+  if (icEl) icEl.style.color = s.charging ? (comp?.throttled ? '#FF9F0A' : '#0A84FF') : isFull ? '#30D158' : connected ? '#9a9aa2' : '#FF453A';
   const unitEl = $('chargeUnit');
   if (unitEl) unitEl.textContent = 'A';
   const standbyW = comp?.standbyW || 0;
@@ -222,7 +228,7 @@ function renderCards(s) {
     if (car?.batteryLevel != null) cs += ` · ${car.batteryLevel}%${car.chargeLimitSoc ? `→${car.chargeLimitSoc}%` : ''}`;
     if (car?.timeToFull > 0) cs += ` · ${fmtEta(car.timeToFull)}`;
     if (s.wc && !s.wc.error && s.wc.sessionWh != null) cs += ` · ${(s.wc.sessionWh / 1000).toFixed(1)} kWh`;
-  } else if (s.fullCharge || car?.batteryLevel >= 100) {
+  } else if (isFull) {
     $('chargeAmps').textContent = 'Full';
     if (unitEl) unitEl.textContent = '';
     cs = '🔋 charged';
@@ -230,7 +236,6 @@ function renderCards(s) {
     else cs += ` · auto resumes ≤ ${s.fullResumeSoc ?? 92}% or on Start`;
   } else {
     $('chargeAmps').textContent = 0;
-    const connected = (s.wc && !s.wc.error) ? s.wc.connected : car?.pluggedIn;
     cs = connected ? 'plugged in' : 'unplugged';
     if (connected && standbyW > 100) {
       // Plugged in, not charging, but drawing power for climate/battery conditioning

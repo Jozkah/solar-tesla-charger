@@ -92,7 +92,11 @@ function solarFromSeries(p) {
   } else if (p.floor1W != null && p.floor1W < 0) {
     w += -p.floor1W; // fallback proxy for older samples without SolaX
   }
-  return w;
+  // Floor by the energy-balance minimum (export + charge − import) so a laggy
+  // SolaX sample never reads below what physically left the panels.
+  const imp = p.gridPower > 0 ? p.gridPower : 0;
+  const floor = Math.max(0, (p.exportW || 0) + (p.chargeW || 0) - imp);
+  return Math.max(w, floor);
 }
 // True total solar = Growatt clamp + SolaX cloud (acpower). Falls back to the
 // floor1-injection proxy only when SolaX cloud data isn't available.
@@ -106,7 +110,14 @@ function solarTotal(s) {
     const f1 = m.channels?.floor1?.power;
     if (f1 != null && f1 < 0) w += -f1; // proxy
   }
-  return w;
+  // SolaX comes from the cloud and lags during ramps, so the measured total can
+  // read below what's physically leaving the panels. Energy balance: everything
+  // exported + charging into the car must come from solar (house load only adds
+  // more), so solar ≥ export + charge − import. Floor the display by that to keep
+  // export from ever looking larger than (solar − charge).
+  const c = s.computed || {};
+  const floor = Math.max(0, (c.exportW || 0) + (c.chargeW || 0) - (c.importW || 0));
+  return Math.max(w, floor);
 }
 
 // --- Connection / data source ----------------------------------------------
@@ -272,12 +283,15 @@ function renderControls(s) {
     else { btn.textContent = '▶ Start charge'; btn.className = TOGGLE_BASE + 'lg-btn-green'; btn.dataset.action = 'start'; }
   }
 
-  // Sync the slider to the server's auto-ceiling unless the user is dragging it.
+  // Sync the slider unless the user is dragging it. While an override is active
+  // the slider tracks the override amps (so live-adjusting it stays put);
+  // otherwise it tracks the auto-ceiling.
   const range = $('ovRange');
   const dragging = document.activeElement === range || (range._touchedAt && Date.now() - range._touchedAt < 4000);
-  if (!dragging && s.maxAmps != null && Number(range.value) !== s.maxAmps) {
-    range.value = s.maxAmps;
-    $('ovVal').textContent = s.maxAmps;
+  const syncVal = s.override ? s.override.amps : s.maxAmps;
+  if (!dragging && syncVal != null && Number(range.value) !== syncVal) {
+    range.value = syncVal;
+    $('ovVal').textContent = syncVal;
   }
 
   // Schedule card (don't clobber inputs the user is editing).
@@ -537,9 +551,25 @@ document.querySelectorAll('#chartRangeSeg button').forEach((b) => b.addEventList
 // Keep longer ranges fresh (the 1h range stays live via the SSE stream).
 setInterval(() => { if (chartHours > 1) loadChartHistory(); }, 30000);
 
-$('ovRange').addEventListener('input', (e) => { $('ovVal').textContent = e.target.value; e.target._touchedAt = Date.now(); });
-// Releasing the slider sets the auto ceiling (auto charges between 5A and this value).
-$('ovRange').addEventListener('change', (e) => { post('/api/maxamps', { amps: Number(e.target.value) }); });
+let ovSlideTimer = null;
+$('ovRange').addEventListener('input', (e) => {
+  $('ovVal').textContent = e.target.value;
+  e.target._touchedAt = Date.now();
+  // While an override is active, re-apply it at the new value ~700ms after the
+  // user stops sliding — no need to press Override again.
+  if (lastState?.override) {
+    clearTimeout(ovSlideTimer);
+    ovSlideTimer = setTimeout(() => post('/api/override', { amps: Number(e.target.value) }), 700);
+  }
+});
+// Releasing the slider: if overriding, update the override; otherwise set the
+// auto ceiling (auto charges between 5A and this value).
+$('ovRange').addEventListener('change', (e) => {
+  clearTimeout(ovSlideTimer);
+  const amps = Number(e.target.value);
+  if (lastState?.override) post('/api/override', { amps });
+  else post('/api/maxamps', { amps });
+});
 $('ovApply').addEventListener('click', () => post('/api/override', { amps: Number($('ovRange').value) }));
 $('ovClear').addEventListener('click', () => post('/api/override/clear'));
 $('chargeToggle').addEventListener('click', () => charge($('chargeToggle').dataset.action || 'start'));

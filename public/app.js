@@ -92,7 +92,11 @@ function solarFromSeries(p) {
   } else if (p.floor1W != null && p.floor1W < 0) {
     w += -p.floor1W; // fallback proxy for older samples without SolaX
   }
-  return w;
+  // Floor by the energy-balance minimum (export + charge − import) so a laggy
+  // SolaX sample never reads below what physically left the panels.
+  const imp = p.gridPower > 0 ? p.gridPower : 0;
+  const floor = Math.max(0, (p.exportW || 0) + (p.chargeW || 0) - imp);
+  return Math.max(w, floor);
 }
 // True total solar = Growatt clamp + SolaX cloud (acpower). Falls back to the
 // floor1-injection proxy only when SolaX cloud data isn't available.
@@ -106,7 +110,13 @@ function solarTotal(s) {
     const f1 = m.channels?.floor1?.power;
     if (f1 != null && f1 < 0) w += -f1; // proxy
   }
-  return w;
+  // SolaX comes from the cloud and lags during ramps, so the measured total can
+  // read below what's physically leaving the panels. Energy balance: solar ≥
+  // export + charge − import (house load only adds more). Floor by that so export
+  // never looks larger than (solar − charge).
+  const c = s.computed || {};
+  const floor = Math.max(0, (c.exportW || 0) + (c.chargeW || 0) - (c.importW || 0));
+  return Math.max(w, floor);
 }
 
 // --- Connection / data source ----------------------------------------------

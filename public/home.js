@@ -44,8 +44,10 @@ function startPolling() {
 }
 function stopPolling() { if (pollTimer) { clearInterval(pollTimer); pollTimer = null; } }
 
+let solarCapW = null; // rated solar ceiling from the server, used to cap the chart's solar floor
 function handleState(s) {
   setConn(true, 'live');
+  solarCapW = s.computed?.solarMaxW ?? null;
   applyWeatherBg(s.weather);
   renderEnergy(s);
   renderMeters(s);
@@ -98,7 +100,8 @@ function solarTotal(s) {
   // Floor by the energy balance (export + charge − import) so a laggy SolaX
   // cloud sample never reads below what physically left the panels.
   const c = s.computed || {};
-  const floor = Math.max(0, (c.exportW || 0) + (c.chargeW || 0) - (c.importW || 0));
+  let floor = Math.max(0, (c.exportW || 0) + (c.chargeW || 0) - (c.importW || 0));
+  if (c.solarMaxW) floor = Math.min(floor, c.solarMaxW);
   return Math.max(w, floor);
 }
 function renderEnergy(s) {
@@ -238,7 +241,9 @@ async function loadChart() {
     const exp = Math.max(0, -(p.gridPower ?? 0));
     const imp = Math.max(0, p.gridPower ?? 0);
     const car = Math.max(0, p.chargeW || 0);
-    const sol = Math.max(seriesSolar(p), exp + car - imp); // energy-balance floor (laggy SolaX)
+    let floor = Math.max(0, exp + car - imp); // energy-balance floor (laggy SolaX)
+    if (solarCapW) floor = Math.min(floor, solarCapW); // cap so a spike can't invent huge solar
+    const sol = Math.max(seriesSolar(p), floor);
     const house = Math.max(0, sol + imp - exp - car);        // home consumption, car excluded
     return { ts: p.ts, exp, imp, sol, car, house };
   });

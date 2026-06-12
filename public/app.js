@@ -451,7 +451,7 @@ function drawChart() {
   const { W, H, pad } = CH;
   const xs = chartData.map((p) => p.ts);
   const x0 = xs[0], x1 = xs[xs.length - 1] || x0 + 1;
-  const max = Math.max(100, ...chartData.map((p) => Math.max(p.exportW, p.chargeW, p.solarW, p.importW || 0, p.houseW || 0)));
+  const max = Math.max(100, ...chartData.map((p) => Math.max(p.exportW, p.chargeW, p.solarW, p.importW || 0)));
   const sx = (t) => pad + ((t - x0) / (x1 - x0 || 1)) * (W - 2 * pad);
   const sy = (v) => H - pad - (v / max) * (H - 2 * pad);
   chartScale = { x0, x1, max, sx, sy };
@@ -471,7 +471,6 @@ function drawChart() {
     + area('exportW', '#34d399') + line('exportW', '#34d399')
     + area('importW', '#FF453A') + line('importW', '#FF453A')
     + line('chargeW', '#60a5fa')
-    + line('houseW', '#bf5af2')
     + `<text x="${pad}" y="14" fill="#8499bd" font-size="11">${Math.round(max)} W</text>`;
 }
 
@@ -495,7 +494,6 @@ function onHover(clientX) {
     + `<div class="t-row"><i style="background:#34d399"></i>export ${fmtW(best.exportW)} W</div>`
     + `<div class="t-row"><i style="background:#60a5fa"></i>charge ${fmtW(best.chargeW)} W</div>`
     + `<div class="t-row"><i style="background:#fbbf24"></i>solar ${fmtW(best.solarW)} W</div>`
-    + `<div class="t-row"><i style="background:#bf5af2"></i>house ${fmtW(best.houseW || 0)} W</div>`
     + `<div class="t-row"><i style="background:#FF453A"></i>import ${fmtW(best.importW || 0)} W</div>`;
 }
 function hideHover() { tip.hidden = true; cross.hidden = true; }

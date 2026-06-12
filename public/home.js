@@ -234,12 +234,14 @@ function seriesSolar(p) {
 async function loadChart() {
   let pts = [];
   try { pts = await (await fetch(`/api/series?hours=${chartHours}`)).json(); } catch { pts = []; }
-  chartSeries = (pts || []).map((p) => ({
-    ts: p.ts,
-    exp: Math.max(0, -(p.gridPower ?? 0)),
-    imp: Math.max(0, p.gridPower ?? 0),
-    sol: seriesSolar(p),
-  }));
+  chartSeries = (pts || []).map((p) => {
+    const exp = Math.max(0, -(p.gridPower ?? 0));
+    const imp = Math.max(0, p.gridPower ?? 0);
+    const car = Math.max(0, p.chargeW || 0);
+    const sol = Math.max(seriesSolar(p), exp + car - imp); // energy-balance floor (laggy SolaX)
+    const house = Math.max(0, sol + imp - exp - car);        // home consumption, car excluded
+    return { ts: p.ts, exp, imp, sol, car, house };
+  });
   renderChart();
 }
 function niceCeil(v) {
@@ -262,7 +264,7 @@ function renderChart(hoverIndex) {
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, cssW, cssH);
   const padL = 4, padR = 4, padT = 10, padB = 18;
   const W = cssW - padL - padR, H = cssH - padT - padB;
-  let max = 0; for (const p of series) max = Math.max(max, p.exp, p.imp, p.sol);
+  let max = 0; for (const p of series) max = Math.max(max, p.exp, p.imp, p.sol, p.car, p.house);
   const niceMax = niceCeil(Math.max(max, 500));
   const X = (i) => padL + (series.length === 1 ? W / 2 : (i / (series.length - 1)) * W);
   const Y = (v) => padT + H - (v / niceMax) * H;
@@ -285,6 +287,8 @@ function renderChart(hoverIndex) {
   drawSeries('sol', '#fbbf24', 'rgba(251,191,36,.10)');
   drawSeries('exp', '#34d399', 'rgba(52,211,153,.10)');
   drawSeries('imp', '#FF453A', 'rgba(255,69,58,.10)');
+  drawSeries('house', '#bf5af2', 'rgba(191,90,242,.08)');
+  drawSeries('car', '#60a5fa', 'rgba(96,165,250,.08)');
   ctx.fillStyle = '#9a9aa2';
   ctx.textAlign = 'left'; ctx.fillText(hhmm(new Date(series[0].ts)), padL, cssH - 5);
   ctx.textAlign = 'right'; ctx.fillText(hhmm(new Date(series[series.length - 1].ts)), padL + W, cssH - 5);
@@ -293,14 +297,16 @@ function renderChart(hoverIndex) {
     const hx = X(hoverIndex), p = series[hoverIndex];
     ctx.strokeStyle = 'rgba(255,255,255,.35)'; ctx.lineWidth = 1;
     ctx.beginPath(); ctx.moveTo(hx, padT); ctx.lineTo(hx, padT + H); ctx.stroke();
-    for (const [k, c] of [['sol', '#fbbf24'], ['exp', '#34d399'], ['imp', '#FF453A']]) {
+    for (const [k, c] of [['sol', '#fbbf24'], ['exp', '#34d399'], ['imp', '#FF453A'], ['house', '#bf5af2'], ['car', '#60a5fa']]) {
       ctx.fillStyle = c; ctx.beginPath(); ctx.arc(hx, Y(p[k]), 3, 0, Math.PI * 2); ctx.fill();
     }
     if (tip) {
       tip.hidden = false;
       tip.innerHTML = `<div class="t-time">${hhmm(new Date(p.ts))}</div>`
-        + `<div class="t-row"><i style="background:#34d399"></i>Export ${fmtW(p.exp)} W</div>`
         + `<div class="t-row"><i style="background:#fbbf24"></i>Solar ${fmtW(p.sol)} W</div>`
+        + `<div class="t-row"><i style="background:#bf5af2"></i>House ${fmtW(p.house)} W</div>`
+        + `<div class="t-row"><i style="background:#60a5fa"></i>Car ${fmtW(p.car)} W</div>`
+        + `<div class="t-row"><i style="background:#34d399"></i>Export ${fmtW(p.exp)} W</div>`
         + `<div class="t-row"><i style="background:#FF453A"></i>Import ${fmtW(p.imp)} W</div>`;
       tip.style.left = Math.max(46, Math.min(cssW - 46, hx)) + 'px';
     }

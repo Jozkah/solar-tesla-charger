@@ -230,6 +230,7 @@ let fullChargeLatch = false;
 let chargeStartedAt = 0;
 let wasCharging = false;
 let lastConnSeen = null; // WC plugged state, to detect replug and refresh the car
+let lastAmpCmdAt = 0; // throttle set_charging_amps to conserve Fleet API command quota
 
 // --- Battery capacity auto-estimate ------------------------------------------
 // Learned from real charges: capacity ≈ charge_energy_added / SoC gained (the
@@ -294,7 +295,10 @@ function computeDecision(meters, car, wc) {
   const carState = car?.chargingState;
   const isCharging = !!(carState === 'Charging' || carState === 'Starting'
     || (carState == null && wcOk && wc.charging && wcCurrent >= (C.minAmps - 0.5)));
-  const connected = wcOk ? wc.connected : !!car?.pluggedIn;
+  // A charging car is by definition plugged in; also accept either the Wall
+  // Connector's or the car's plugged signal (one may be stale, e.g. when the
+  // Fleet API is rate-limited and car telemetry goes stale).
+  const connected = isCharging || (wcOk && wc.connected) || !!car?.pluggedIn;
   // Plugged in, not charging, but still drawing power = conditioning / Sentry / standby.
   const standbyW = connected && !isCharging && wcOk && wc.power > 100 ? Math.round(wc.power) : 0;
   if (isCharging && !wasCharging) chargeStartedAt = Date.now();
@@ -591,10 +595,16 @@ async function controlCycle() {
         await safeCmd('start charge', () => tesla.chargeStart());
       }
       const current = car?.chargeAmps ?? lastSetAmps;
-      if (current == null || Math.abs(desired - current) >= C.minAmpStepChange || eff) {
+      const delta = current == null ? Infinity : Math.abs(desired - current);
+      // Conserve Fleet API command quota: small solar-driven tweaks go out at most
+      // once per minAmpCmdIntervalSec; a big jump or a manual override goes now.
+      const bigJump = delta >= (C.ampCmdForceStep ?? 5);
+      const dueByTime = (now - lastAmpCmdAt) / 1000 >= (C.minAmpCmdIntervalSec ?? 60);
+      if (current == null || eff || bigJump || (delta >= C.minAmpStepChange && dueByTime)) {
         action = await safeCmd(`set ${desired}A${sched && !state.override ? ' (schedule)' : ''}`, () => tesla.setChargingAmps(desired));
         appliedAmps = desired;
         lastSetAmps = desired;
+        lastAmpCmdAt = now;
         bumpAdjustments();
       } else {
         action = `hold ${current}A`;

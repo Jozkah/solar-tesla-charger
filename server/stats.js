@@ -146,6 +146,7 @@ export function getSeries(hours = 1) {
       chargeW: r.charge_w,
       solar2W: r.solar2_w,
       floor1W: r.floor1_w,
+      floor2W: r.floor2_w,
       solaxW: r.solax_w,
       chargeAmps: r.charge_amps,
     });

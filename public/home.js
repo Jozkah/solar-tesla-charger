@@ -100,9 +100,10 @@ function solarTotal(s) {
   // Floor by the energy balance (export + charge − import) so a laggy SolaX
   // cloud sample never reads below what physically left the panels.
   const c = s.computed || {};
-  let floor = Math.max(0, (c.exportW || 0) + (c.chargeW || 0) - (c.importW || 0));
-  if (c.solarMaxW) floor = Math.min(floor, c.solarMaxW);
-  return Math.max(w, floor);
+  const floor = Math.max(0, (c.exportW || 0) + (c.chargeW || 0) - (c.importW || 0));
+  let out = Math.max(w, floor);
+  if (c.solarMaxW) out = Math.min(out, c.solarMaxW); // cap final at rated ceiling
+  return out;
 }
 function renderEnergy(s) {
   const m = s.meters;
@@ -245,9 +246,9 @@ async function loadChart() {
     const exp = Math.max(0, -(p.gridPower ?? 0));
     const imp = Math.max(0, p.gridPower ?? 0);
     const car = Math.max(0, p.chargeW || 0);
-    let floor = Math.max(0, exp + car - imp); // energy-balance floor (laggy SolaX)
-    if (solarCapW) floor = Math.min(floor, solarCapW); // cap so a spike can't invent huge solar
-    const sol = Math.max(seriesSolar(p), floor);
+    const floor = Math.max(0, exp + car - imp); // energy-balance floor (laggy SolaX)
+    let sol = Math.max(seriesSolar(p), floor);
+    if (solarCapW) sol = Math.min(sol, solarCapW); // cap final so no spike shows impossible solar
     // House per topology: Andar de Cima (floor1) + (Andar de Baixo (floor2) − SolaX) − car.
     const solaxW = p.solaxW > 0 ? p.solaxW : 0;
     const house = Math.max(0, (p.floor1W || 0) + ((p.floor2W || 0) - solaxW) - car);

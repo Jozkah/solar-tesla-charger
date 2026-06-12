@@ -116,11 +116,12 @@ function solarTotal(s) {
   // more), so solar ≥ export + charge − import. Floor the display by that to keep
   // export from ever looking larger than (solar − charge).
   const c = s.computed || {};
-  // Cap the floor at the rated solar ceiling so a one-sample charge/export
-  // spike can't invent an impossible solar value.
-  let floor = Math.max(0, (c.exportW || 0) + (c.chargeW || 0) - (c.importW || 0));
-  if (c.solarMaxW) floor = Math.min(floor, c.solarMaxW);
-  return Math.max(w, floor);
+  // Floor by the energy balance; cap the FINAL value at the rated ceiling so no
+  // spike (the floor OR a bad measured reading) can show impossible solar.
+  const floor = Math.max(0, (c.exportW || 0) + (c.chargeW || 0) - (c.importW || 0));
+  let out = Math.max(w, floor);
+  if (c.solarMaxW) out = Math.min(out, c.solarMaxW);
+  return out;
 }
 
 // --- Connection / data source ----------------------------------------------

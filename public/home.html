@@ -126,20 +126,27 @@
   <!-- Energy summary -->
   <section>
     <h2 class="text-[13px] font-bold tracking-widest text-mut mb-2.5 px-1">ENERGY</h2>
-    <div class="grid grid-cols-3 gap-3">
+    <div class="grid grid-cols-3 sm:grid-cols-5 gap-3">
       <div class="glass rounded-2xl p-4 flex flex-col gap-1.5">
         <div class="flex justify-between items-center"><span id="ic-solar" class="text-ios-amber"></span><span class="text-mut text-[11px] font-semibold tracking-wider">SOLAR</span></div>
         <span class="text-[22px] font-bold tnum"><span id="solar">–</span><span class="text-sm font-normal text-mut ml-0.5">kW</span></span>
         <span id="solarSub" class="text-[11px] text-mut">&nbsp;</span>
       </div>
       <div class="glass rounded-2xl p-4 flex flex-col gap-1.5">
-        <div class="flex justify-between items-center"><span id="ic-grid" class="text-ios-blue"></span><span class="text-mut text-[11px] font-semibold tracking-wider">GRID</span></div>
-        <span class="text-[22px] font-bold tnum"><span id="grid">–</span><span class="text-sm font-normal text-mut ml-0.5">W</span></span>
-        <span id="gridLabel" class="text-[11px] font-semibold">&nbsp;</span>
-      </div>
-      <div class="glass rounded-2xl p-4 flex flex-col gap-1.5">
         <div class="flex justify-between items-center"><span id="ic-house" class="text-ios-green"></span><span class="text-mut text-[11px] font-semibold tracking-wider">HOUSE</span></div>
         <span class="text-[22px] font-bold tnum"><span id="house">–</span><span class="text-sm font-normal text-mut ml-0.5">kW</span></span>
+      </div>
+      <div class="glass rounded-2xl p-4 flex flex-col gap-1.5">
+        <div class="flex justify-between items-center"><span id="ic-car" class="text-ios-blue"></span><span class="text-mut text-[11px] font-semibold tracking-wider">CAR</span></div>
+        <span class="text-[22px] font-bold tnum"><span id="car">–</span><span class="text-sm font-normal text-mut ml-0.5">kW</span></span>
+      </div>
+      <div class="glass rounded-2xl p-4 flex flex-col gap-1.5">
+        <div class="flex justify-between items-center"><span class="text-mut text-[11px] font-semibold tracking-wider">EXPORT</span></div>
+        <span class="text-[22px] font-bold tnum" style="color:#30D158"><span id="export">–</span><span class="text-sm font-normal text-mut ml-0.5">W</span></span>
+      </div>
+      <div class="glass rounded-2xl p-4 flex flex-col gap-1.5">
+        <div class="flex justify-between items-center"><span class="text-mut text-[11px] font-semibold tracking-wider">IMPORT</span></div>
+        <span class="text-[22px] font-bold tnum" style="color:#FF453A"><span id="import">–</span><span class="text-sm font-normal text-mut ml-0.5">W</span></span>
       </div>
     </div>
     <div class="text-[11px] font-bold tracking-widest text-mut mt-4 mb-2 px-1">TODAY</div>

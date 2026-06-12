@@ -423,7 +423,9 @@ function pushChartPoint(s) {
   const now = s.ts;
   const last = chartData[chartData.length - 1];
   if (last && now - last.ts < 1500) return; // throttle
-  chartData.push({ ts: now, exportW: Math.max(0, c.exportW || 0), importW: Math.max(0, c.importW || 0), chargeW: Math.max(0, c.chargeW || 0), solarW: solarTotal(s) });
+  const solarW = solarTotal(s);
+  const houseW = Math.max(0, solarW + (c.importW || 0) - (c.exportW || 0) - (c.chargeW || 0));
+  chartData.push({ ts: now, exportW: Math.max(0, c.exportW || 0), importW: Math.max(0, c.importW || 0), chargeW: Math.max(0, c.chargeW || 0), solarW, houseW });
   const cut = now - WINDOW_MS;
   chartData = chartData.filter((p) => p.ts >= cut);
   drawChart();
@@ -432,7 +434,11 @@ function pushChartPoint(s) {
 async function loadChartHistory() {
   try {
     const series = await (await fetch('/api/series?hours=' + chartHours)).json();
-    chartData = series.map((p) => ({ ts: p.ts, exportW: Math.max(0, p.exportW || 0), importW: Math.max(0, p.gridPower || 0), chargeW: Math.max(0, p.chargeW || 0), solarW: solarFromSeries(p) }));
+    chartData = series.map((p) => {
+      const exportW = Math.max(0, p.exportW || 0), importW = Math.max(0, p.gridPower || 0), chargeW = Math.max(0, p.chargeW || 0);
+      const solarW = solarFromSeries(p);
+      return { ts: p.ts, exportW, importW, chargeW, solarW, houseW: Math.max(0, solarW + importW - exportW - chargeW) };
+    });
     drawChart();
   } catch {}
 }
@@ -445,7 +451,7 @@ function drawChart() {
   const { W, H, pad } = CH;
   const xs = chartData.map((p) => p.ts);
   const x0 = xs[0], x1 = xs[xs.length - 1] || x0 + 1;
-  const max = Math.max(100, ...chartData.map((p) => Math.max(p.exportW, p.chargeW, p.solarW, p.importW || 0)));
+  const max = Math.max(100, ...chartData.map((p) => Math.max(p.exportW, p.chargeW, p.solarW, p.importW || 0, p.houseW || 0)));
   const sx = (t) => pad + ((t - x0) / (x1 - x0 || 1)) * (W - 2 * pad);
   const sy = (v) => H - pad - (v / max) * (H - 2 * pad);
   chartScale = { x0, x1, max, sx, sy };
@@ -465,6 +471,7 @@ function drawChart() {
     + area('exportW', '#34d399') + line('exportW', '#34d399')
     + area('importW', '#FF453A') + line('importW', '#FF453A')
     + line('chargeW', '#60a5fa')
+    + line('houseW', '#bf5af2')
     + `<text x="${pad}" y="14" fill="#8499bd" font-size="11">${Math.round(max)} W</text>`;
 }
 
@@ -488,6 +495,7 @@ function onHover(clientX) {
     + `<div class="t-row"><i style="background:#34d399"></i>export ${fmtW(best.exportW)} W</div>`
     + `<div class="t-row"><i style="background:#60a5fa"></i>charge ${fmtW(best.chargeW)} W</div>`
     + `<div class="t-row"><i style="background:#fbbf24"></i>solar ${fmtW(best.solarW)} W</div>`
+    + `<div class="t-row"><i style="background:#bf5af2"></i>house ${fmtW(best.houseW || 0)} W</div>`
     + `<div class="t-row"><i style="background:#FF453A"></i>import ${fmtW(best.importW || 0)} W</div>`;
 }
 function hideHover() { tip.hidden = true; cross.hidden = true; }

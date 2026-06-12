@@ -95,24 +95,32 @@ function solarTotal(s) {
   if (m.solarPanels2 < 0) w += -m.solarPanels2;
   if (s.solax && s.solax.ok && s.solax.acpower != null) w += Math.max(0, s.solax.acpower);
   else { const f1 = m.channels?.floor1?.power; if (f1 != null && f1 < 0) w += -f1; }
-  return w;
+  // Floor by the energy balance (export + charge − import) so a laggy SolaX
+  // cloud sample never reads below what physically left the panels.
+  const c = s.computed || {};
+  const floor = Math.max(0, (c.exportW || 0) + (c.chargeW || 0) - (c.importW || 0));
+  return Math.max(w, floor);
 }
 function renderEnergy(s) {
   const m = s.meters;
   if (!m) return;
+  const c = s.computed || {};
   const solar = solarTotal(s);
-  const gp = m.gridPower; // + import, - export
+  const gp = m.gridPower; // + import, − export
+  const carW = Math.max(0, c.chargeW || 0);        // the car (charge + standby draw)
+  const exportW = gp < 0 ? -gp : 0;
+  const importW = gp > 0 ? gp : 0;
+  // House = everything the home consumes EXCEPT the car. Energy balance:
+  // solar + import = house + car + export  ⇒  house = solar + import − export − car.
+  const houseW = Math.max(0, solar + importW - exportW - carW);
   $('solar').textContent = fmtKw(solar);
-  // Per-panel breakdown on the SOLAR tile's sub-line (like the Tesla view).
   const growattW = m.solarPanels2 < 0 ? -m.solarPanels2 : 0;
   const solaxW = s.solax && s.solax.ok && s.solax.acpower != null ? Math.max(0, s.solax.acpower) : null;
   $('solarSub').textContent = solaxW != null ? `Growatt ${fmtW(growattW)} · SolaX ${fmtW(solaxW)} W` : `${fmtW(solar)} W now`;
-  $('house').textContent = fmtKw(Math.max(0, solar + gp));
-  const exporting = gp < 0;
-  $('grid').textContent = fmtW(Math.abs(gp));
-  const gl = $('gridLabel');
-  gl.textContent = exporting ? 'exporting' : 'importing';
-  gl.style.color = exporting ? '#30D158' : '#FF453A';
+  $('house').textContent = fmtKw(houseW);
+  $('car').textContent = carW > 50 ? fmtKw(carW) : '0';
+  $('export').textContent = fmtW(exportW);
+  $('import').textContent = fmtW(importW);
 }
 
 // --- House per-circuit meters (ported from the Tesla view) -------------------
@@ -450,7 +458,7 @@ async function loadStats() {
 
 // --- Boot --------------------------------------------------------------------
 $('ic-solar').innerHTML = icon('sun');
-$('ic-grid').innerHTML = icon('bolt');
+$('ic-car').innerHTML = icon('bolt');
 $('ic-house').innerHTML = icon('house');
 loadCameras();
 loadWeather();

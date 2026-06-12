@@ -115,12 +115,13 @@ function renderEnergy(s) {
   const exportW = gp < 0 ? -gp : 0;
   const importW = gp > 0 ? gp : 0;
   // House per the actual metering topology: Andar de Cima (floor1) + Andar de
-  // Baixo (floor2) − SolaX − car. SolaX injects into Andar de Baixo, so subtract
-  // it to recover that floor's real load; the car's draw also sits on these.
+  // Baixo (floor2) + SolaX − car. SolaX injects into Andar de Baixo, which makes
+  // that meter read LOWER (net = load − injection), so ADD SolaX back to recover
+  // the floor's real load; the car's draw also sits on these circuits.
   const cima = m.channels?.floor1?.power || 0;
   const baixo = m.channels?.floor2?.power || 0;
   const solaxGenW = s.solax && s.solax.ok && s.solax.acpower != null ? Math.max(0, s.solax.acpower) : 0;
-  const houseW = Math.max(0, cima + (baixo - solaxGenW) - carW);
+  const houseW = Math.max(0, cima + (baixo + solaxGenW) - carW);
   $('solar').textContent = fmtKw(solar);
   const growattW = m.solarPanels2 < 0 ? -m.solarPanels2 : 0;
   const solaxW = s.solax && s.solax.ok && s.solax.acpower != null ? Math.max(0, s.solax.acpower) : null;
@@ -249,9 +250,10 @@ async function loadChart() {
     const floor = Math.max(0, exp + car - imp); // energy-balance floor (laggy SolaX)
     let sol = Math.max(seriesSolar(p), floor);
     if (solarCapW) sol = Math.min(sol, solarCapW); // cap final so no spike shows impossible solar
-    // House per topology: Andar de Cima (floor1) + (Andar de Baixo (floor2) − SolaX) − car.
+    // House per topology: Andar de Cima (floor1) + (Andar de Baixo (floor2) + SolaX) − car.
+    // SolaX injects into floor2, lowering that meter, so add it back to get real load.
     const solaxW = p.solaxW > 0 ? p.solaxW : 0;
-    const house = Math.max(0, (p.floor1W || 0) + ((p.floor2W || 0) - solaxW) - car);
+    const house = Math.max(0, (p.floor1W || 0) + ((p.floor2W || 0) + solaxW) - car);
     return { ts: p.ts, exp, imp, sol, car, house };
   });
   renderChart();

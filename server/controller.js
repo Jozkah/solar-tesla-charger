@@ -393,6 +393,7 @@ function setComputed(meters, d) {
     throttleInfo: d.throttleInfo, // latched { since, requestA, actualA } while active
     batteryKwh: autoBatteryKwh() ?? C.batteryKwh ?? 60, // learned from charges, config fallback
     solarMaxW: C.solarMaxW ?? null, // rated solar ceiling; caps the energy-balance floor
+    solaxMaxW: C.solaxMaxW ?? null, // SolaX rating; floor can't exceed live Growatt + this
     batteryKwhLearned: autoBatteryKwh() != null,
     minAmps: C.minAmps,
     // Amps the current surplus could sustain (0 if below the minimum to charge).

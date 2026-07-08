@@ -45,9 +45,11 @@ function startPolling() {
 function stopPolling() { if (pollTimer) { clearInterval(pollTimer); pollTimer = null; } }
 
 let solarCapW = null; // rated solar ceiling from the server, used to cap the chart's solar floor
+let solaxCapW = null; // SolaX rating, bounds the chart's solar floor to Growatt + this
 function handleState(s) {
   setConn(true, 'live');
   solarCapW = s.computed?.solarMaxW ?? null;
+  solaxCapW = s.computed?.solaxMaxW ?? null;
   applyWeatherBg(s.weather);
   renderEnergy(s);
   renderMeters(s);
@@ -100,7 +102,11 @@ function solarTotal(s) {
   // Floor by the energy balance (export + charge − import) so a laggy SolaX
   // cloud sample never reads below what physically left the panels.
   const c = s.computed || {};
-  const floor = Math.max(0, (c.exportW || 0) + (c.chargeW || 0) - (c.importW || 0));
+  // Bound the floor: solar can't exceed live Growatt + SolaX rating (only SolaX
+  // lags), so a polling-skew export/charge spike can't invent huge solar.
+  const growatt = m.solarPanels2 < 0 ? -m.solarPanels2 : 0;
+  let floor = Math.max(0, (c.exportW || 0) + (c.chargeW || 0) - (c.importW || 0));
+  if (c.solaxMaxW != null) floor = Math.min(floor, growatt + c.solaxMaxW);
   let out = Math.max(w, floor);
   if (c.solarMaxW) out = Math.min(out, c.solarMaxW); // cap final at rated ceiling
   return out;
@@ -247,7 +253,9 @@ async function loadChart() {
     const exp = Math.max(0, -(p.gridPower ?? 0));
     const imp = Math.max(0, p.gridPower ?? 0);
     const car = Math.max(0, p.chargeW || 0);
-    const floor = Math.max(0, exp + car - imp); // energy-balance floor (laggy SolaX)
+    const growatt = p.solar2W < 0 ? -p.solar2W : 0;
+    let floor = Math.max(0, exp + car - imp); // energy-balance floor (laggy SolaX)
+    if (solaxCapW != null) floor = Math.min(floor, growatt + solaxCapW); // can't exceed live Growatt + SolaX rating
     let sol = Math.max(seriesSolar(p), floor);
     if (solarCapW) sol = Math.min(sol, solarCapW); // cap final so no spike shows impossible solar
     // House per topology: Andar de Cima (floor1) + (Andar de Baixo (floor2) + SolaX) − car.

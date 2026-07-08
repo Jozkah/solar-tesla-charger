@@ -116,9 +116,12 @@ function solarTotal(s) {
   // more), so solar ≥ export + charge − import. Floor the display by that to keep
   // export from ever looking larger than (solar − charge).
   const c = s.computed || {};
-  // Floor by the energy balance; cap the FINAL value at the rated ceiling so no
-  // spike (the floor OR a bad measured reading) can show impossible solar.
-  const floor = Math.max(0, (c.exportW || 0) + (c.chargeW || 0) - (c.importW || 0));
+  // Floor by the energy balance, but bound it: Growatt is measured live, only
+  // SolaX lags, so solar can't exceed live Growatt + SolaX's rating. That stops a
+  // polling-skew export/charge spike from inventing huge solar. Final rated cap too.
+  const growatt = m.solarPanels2 < 0 ? -m.solarPanels2 : 0;
+  let floor = Math.max(0, (c.exportW || 0) + (c.chargeW || 0) - (c.importW || 0));
+  if (c.solaxMaxW != null) floor = Math.min(floor, growatt + c.solaxMaxW);
   let out = Math.max(w, floor);
   if (c.solarMaxW) out = Math.min(out, c.solarMaxW);
   return out;

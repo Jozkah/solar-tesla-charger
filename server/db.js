@@ -112,6 +112,7 @@ export function updateSession(s) {
 
 export const queries = {
   samplesSince: db.prepare('SELECT * FROM samples WHERE ts >= ? ORDER BY ts ASC'),
+  samplesBetween: db.prepare('SELECT * FROM samples WHERE ts >= ? AND ts < ? ORDER BY ts ASC'),
   sessionsSince: db.prepare('SELECT * FROM sessions WHERE started_at >= ? ORDER BY id DESC'),
   allSessions: db.prepare('SELECT * FROM sessions ORDER BY id DESC'),
   peakAllTime: db.prepare('SELECT MAX(charge_w) AS peak_w, MAX(charge_amps) AS peak_amps FROM samples'),

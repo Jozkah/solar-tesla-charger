@@ -8,6 +8,34 @@ function startOfTodayMs() {
   return d.getTime();
 }
 
+// [since, until) bounds for a calendar period, `offset` periods back from the
+// current one (offset 0 = today / this week / this month). Weeks start Monday.
+export function periodBounds(range, offset = 0) {
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  if (range === 'day') {
+    d.setDate(d.getDate() - offset);
+    const since = d.getTime();
+    d.setDate(d.getDate() + 1);
+    return { since, until: d.getTime() };
+  }
+  if (range === 'week') {
+    const dow = (d.getDay() + 6) % 7; // Monday = 0
+    d.setDate(d.getDate() - dow - offset * 7);
+    const since = d.getTime();
+    d.setDate(d.getDate() + 7);
+    return { since, until: d.getTime() };
+  }
+  if (range === 'month') {
+    d.setDate(1);
+    d.setMonth(d.getMonth() - offset);
+    const since = d.getTime();
+    d.setMonth(d.getMonth() + 1);
+    return { since, until: d.getTime() };
+  }
+  return null;
+}
+
 // Integrate a signed power column (W) over a list of time-ordered samples -> Wh.
 // Only counts the positive part when `positiveOnly`, else the whole signed value.
 function integrate(rows, pick, { positiveOnly = false } = {}) {
@@ -23,16 +51,19 @@ function integrate(rows, pick, { positiveOnly = false } = {}) {
   return wh;
 }
 
-export function getStats(range = 'today') {
+export function getStats(range = 'today', offset = 0) {
   const now = Date.now();
   let since;
-  if (range === 'all') since = 0;
+  let until = null; // null = open-ended (up to now)
+  const bounds = periodBounds(range, offset);
+  if (bounds) ({ since, until } = bounds);
+  else if (range === 'all') since = 0;
   else if (range === 'session') {
     const s = currentSession();
     since = s ? s.started_at : now - 3_600_000;
   } else since = startOfTodayMs();
 
-  const rows = queries.samplesSince.all(since);
+  const rows = until != null ? queries.samplesBetween.all(since, until) : queries.samplesSince.all(since);
   const peakAll = queries.peakAllTime.get() || {};
 
   // Energy figures from sample integration (robust even without session rows).
@@ -56,6 +87,11 @@ export function getStats(range = 'today') {
   }
 
   // Total solar generation = Growatt clamp (generation is negative) + SolaX cloud.
+  // Deliberately NOT floored by the energy balance the way the live dashboard tile
+  // is: solax_w is a cloud reading minutes behind the live grid/charge columns, so
+  // per-sample max(measured, balance) would grab each ramp peak without the
+  // matching trough and bias the total up (~+7% over the June history). The floor
+  // fixes an instantaneous display; an energy total has to stay measured.
   const solaxWh = integrate(rows, (r) => Math.max(0, r.solax_w || 0));
   const solarGenWh = solar2Wh + solaxWh;
 
@@ -91,7 +127,9 @@ export function getStats(range = 'today') {
 
   return {
     range,
+    offset,
     since,
+    until,
     now,
     samples: rows.length,
     car: {

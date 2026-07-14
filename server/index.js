@@ -38,8 +38,12 @@ app.get('/api/stream', (req, res) => {
 });
 
 app.get('/api/stats', (req, res) => {
-  const range = ['today', 'session', 'all'].includes(req.query.range) ? req.query.range : 'today';
-  res.json(stats.getStats(range));
+  const range = ['today', 'session', 'all', 'day', 'week', 'month'].includes(req.query.range)
+    ? req.query.range
+    : 'today';
+  // Periods back from the current one (day/week/month ranges only).
+  const offset = Math.min(1000, Math.max(0, Math.trunc(Number(req.query.offset) || 0)));
+  res.json(stats.getStats(range, offset));
 });
 
 app.get('/api/series', (req, res) => {

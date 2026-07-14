@@ -1,7 +1,10 @@
 // Derives the dashboard statistics from the SQLite sample/session history.
 import { queries, currentSession, saveDayRollup } from './db.js';
 import config from './config.js';
-import { computeDayRollup, foldRollups, nextDayMs, isDayComplete, shouldPersistDay, walkStartMs } from './rollup.js';
+import {
+  computeDayRollup, foldRollups, nextDayMs, isDayComplete, shouldPersistDay, walkStartMs,
+  startOfDayMs, floorKnownStart,
+} from './rollup.js';
 
 function startOfTodayMs() {
   const d = new Date();
@@ -37,12 +40,6 @@ export function periodBounds(range, offset = 0) {
   return null;
 }
 
-function startOfDayMs(ts) {
-  const d = new Date(ts);
-  d.setHours(0, 0, 0, 0);
-  return d.getTime();
-}
-
 // The calendar day of the earliest SURVIVING sample, or Infinity if the
 // database is empty. Answers "may we PERSIST this day?" — a day must have
 // samples we can actually compute from to freeze a rollup. Every real day is
@@ -60,13 +57,17 @@ function historyStartMs() {
 // sample, whichever is older. Infinity if the database is entirely empty.
 // Answers "how far back do we know anything?" — this is the correct bound for
 // walking a range (rollupRange), because daily_stats outlives the sample
-// prune and must never be silently skipped.
+// prune and must never be silently skipped. Floored via floorKnownStart so a
+// stray pre-history daily_stats row (restore-from-backup, clock skew, manual
+// insert) can't drag every walk back to it — see rollup.js for why that
+// matters (shouldPersistDay never lets such a row's cache heal itself).
 function knownStartMs() {
   const firstRollup = queries.firstRollupDay.get()?.day_ts ?? null;
   const firstSample = queries.firstSampleTs.get()?.ts ?? null;
   const starts = [firstRollup, firstSample == null ? null : startOfDayMs(firstSample)]
     .filter((v) => v != null);
-  return starts.length ? Math.min(...starts) : Infinity;
+  const rawStart = starts.length ? Math.min(...starts) : Infinity;
+  return floorKnownStart(rawStart, Date.now());
 }
 
 function retentionStartMs() {

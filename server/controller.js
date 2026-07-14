@@ -747,35 +747,68 @@ async function safeCmd(label, fn) {
 // this is safe and cheap to run from scratch on every boot. Harmless if the
 // process exits mid-warm — the next boot just resumes the scan.
 //
-// Called once at boot AND re-armed on the daily timer (see start()), ahead of
-// pruneOld(): a day is only persistable for a ~sampleRetentionDays window
-// (shouldPersistDay refuses anything before retentionStart), and that window
-// slides forward every day. A boot-only warm-up covers history up to the day
-// it ran; on a machine that stays up longer than the retention window, every
-// day *since* boot would otherwise never get scanned (warmCursor already sat
-// at "today" from the first run) and would eventually age out of retention
-// and get pruned — losing that day's data from `all` for good. Re-arming
-// daily lets the cursor resume from wherever it stopped and catch up.
+// Run once at boot (async, warmRollupsStep) AND re-armed on the daily timer
+// (synchronous, warmRollupsDrain — see start()), ahead of pruneOld(): a day
+// is only persistable for a ~sampleRetentionDays window (shouldPersistDay
+// refuses anything before retentionStart), and that window slides forward
+// every day. A boot-only warm-up covers history up to the day it ran; on a
+// machine that stays up longer than the retention window, every day *since*
+// boot would otherwise never get scanned (warmCursor already sat at "today"
+// from the first run) and would eventually age out of retention and get
+// pruned — losing that day's data from `all` for good. Re-arming daily lets
+// the cursor resume from wherever it stopped and catch up.
 let warmFailStreak = 0;
 const WARM_MAX_FAIL_STREAK = 5; // give up for this run after this many in a row
-function warmRollupsStep() {
-  let more = false;
+
+// Runs exactly one warm-up day and returns whether there's more to do.
+// Shared by the async boot chain (warmRollupsStep) and the synchronous daily
+// drain (warmRollupsDrain) below so both get the same error handling: a
+// background backfill failure is not user-actionable, so it must not hijack
+// the dashboard's error banner (state.lastError) — log it instead, prefixed
+// so it's identifiable in the logs. warmCursor has already advanced past the
+// failing day inside warmNextRollupDay, so retrying moves on to the next day
+// rather than looping on the same one; the streak counter just bounds how
+// long we keep trying if failures persist (e.g. a corrupt run of days) so
+// this can't retry forever.
+function warmRollupsTick() {
   try {
-    more = stats.warmNextRollupDay();
+    const more = stats.warmNextRollupDay();
     warmFailStreak = 0;
+    return more;
   } catch (e) {
-    // A background backfill failure is not user-actionable, so it must not
-    // hijack the dashboard's error banner (state.lastError) — log it instead,
-    // prefixed so it's identifiable in the logs. warmCursor has already
-    // advanced past the failing day inside warmNextRollupDay, so retrying
-    // moves on to the next day rather than looping on the same one; the
-    // streak counter just bounds how long we keep trying if failures persist
-    // (e.g. a corrupt run of days) so this can't retry forever.
     warmFailStreak++;
     console.error(`rollup warm: ${e?.message || e}`);
-    more = warmFailStreak < WARM_MAX_FAIL_STREAK;
+    return warmFailStreak < WARM_MAX_FAIL_STREAK;
   }
-  if (more) setImmediate(warmRollupsStep);
+}
+
+// Boot warm-up: one day per event-loop tick via setImmediate, so the
+// synchronous DB work (~25ms/day worst case) never blocks the ~2s live loop,
+// the SSE feed, or the control loop that commands the car for more than one
+// day at a stretch — see the big comment above for the full rationale.
+function warmRollupsStep() {
+  if (warmRollupsTick()) setImmediate(warmRollupsStep);
+}
+
+// Daily re-arm: drains the backlog SYNCHRONOUSLY, in the same tick, before
+// pruneOld() runs right after it (see start()). This is what actually makes
+// good on "the day that just aged into the persistable window gets its
+// chance before pruneOld can delete its samples" — a fully async chain (as
+// warmRollupsStep uses for the boot warm-up) is NOT guaranteed to have
+// reached that day by the time this callback returns and pruneOld() fires;
+// nothing here says "and the rest happens eventually" so it must not promise
+// "happens before X" while actually being async.
+//
+// Safe to do synchronously specifically here, unlike the boot warm-up: this
+// timer fires once every 24h, and under normal operation the boot warm-up
+// (or yesterday's run of this very drain) has already caught warmCursor up
+// to "today - 1" long before the next tick — so this loop typically runs
+// ONE ~25ms step, not a multi-day backfill. WARM_MAX_FAIL_STREAK still bounds
+// it if a run of days keeps throwing. If a deployment goes down for weeks and
+// wakes up with a huge backlog, that backlog is instead drained by the async
+// boot warm-up (setImmediate chain) well before this interval ever fires.
+function warmRollupsDrain() {
+  while (warmRollupsTick());
 }
 
 export function start() {
@@ -794,8 +827,13 @@ export function start() {
   timers.push(setInterval(car, (C.carPollSec || 90) * 1000));
   timers.push(setInterval(camStatus, (config.cameras?.statusPollSec || 45) * 1000));
   // Re-arm the warm-up ahead of the prune so a day that just became eligible
-  // to persist gets its chance before pruneOld can delete its samples.
-  timers.push(setInterval(() => { warmRollupsStep(); db.pruneOld(); }, 86_400_000));
+  // to persist gets its chance before pruneOld can delete its samples — see
+  // warmRollupsDrain's comment for why this must be the synchronous drain,
+  // not warmRollupsStep's async chain. warmFailStreak resets here too: it
+  // otherwise only clears on success, so a run that ended at the 5-failure
+  // cap would leave the next day's re-arm with just ONE attempt before
+  // hitting that same stale cap again, instead of a fresh 5.
+  timers.push(setInterval(() => { warmFailStreak = 0; warmRollupsDrain(); db.pruneOld(); }, 86_400_000));
   timers.forEach((t) => t.unref?.());
 }
 export function stop() {

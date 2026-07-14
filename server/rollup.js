@@ -95,6 +95,19 @@ export function shouldPersistDay(dayStart, nowMs, historyStart, retentionStart) 
   return true;
 }
 
+// The first day a range walk must visit: the later of the requested `since`
+// and `knownStart` (the earliest day we know ANYTHING about — see stats.js's
+// knownStartMs). This must NOT be historyStart (earliest surviving sample
+// only): a day whose samples were pruned but whose daily_stats row still
+// exists is still "known" and must be walked, or its stored rollup silently
+// drops out of `all`/`month` once it ages past the sample retention window.
+// `until` is the fallback when knownStart is Infinity (empty DB) so the loop
+// in rollupRange (`for (d = walkStart; d < until; ...)`) walks zero days
+// instead of iterating from -Infinity.
+export function walkStartMs(since, until, knownStart) {
+  return Math.max(since, knownStart === Infinity ? until : knownStart);
+}
+
 // Combine day rollups into one range total. Peaks take a max; everything else
 // sums. Ratios (solarPct) and chargingMinutes are derived by the caller from
 // the summed parts — never averaged across days.

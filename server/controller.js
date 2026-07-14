@@ -746,12 +746,34 @@ async function safeCmd(label, fn) {
 // commands the car. Already-persisted days are skipped almost for free, so
 // this is safe and cheap to run from scratch on every boot. Harmless if the
 // process exits mid-warm — the next boot just resumes the scan.
+//
+// Called once at boot AND re-armed on the daily timer (see start()), ahead of
+// pruneOld(): a day is only persistable for a ~sampleRetentionDays window
+// (shouldPersistDay refuses anything before retentionStart), and that window
+// slides forward every day. A boot-only warm-up covers history up to the day
+// it ran; on a machine that stays up longer than the retention window, every
+// day *since* boot would otherwise never get scanned (warmCursor already sat
+// at "today" from the first run) and would eventually age out of retention
+// and get pruned — losing that day's data from `all` for good. Re-arming
+// daily lets the cursor resume from wherever it stopped and catch up.
+let warmFailStreak = 0;
+const WARM_MAX_FAIL_STREAK = 5; // give up for this run after this many in a row
 function warmRollupsStep() {
   let more = false;
   try {
     more = stats.warmNextRollupDay();
+    warmFailStreak = 0;
   } catch (e) {
-    state.lastError = String(e?.message || e);
+    // A background backfill failure is not user-actionable, so it must not
+    // hijack the dashboard's error banner (state.lastError) — log it instead,
+    // prefixed so it's identifiable in the logs. warmCursor has already
+    // advanced past the failing day inside warmNextRollupDay, so retrying
+    // moves on to the next day rather than looping on the same one; the
+    // streak counter just bounds how long we keep trying if failures persist
+    // (e.g. a corrupt run of days) so this can't retry forever.
+    warmFailStreak++;
+    console.error(`rollup warm: ${e?.message || e}`);
+    more = warmFailStreak < WARM_MAX_FAIL_STREAK;
   }
   if (more) setImmediate(warmRollupsStep);
 }
@@ -771,7 +793,9 @@ export function start() {
   timers.push(setInterval(ctrl, C.pollIntervalSec * 1000));
   timers.push(setInterval(car, (C.carPollSec || 90) * 1000));
   timers.push(setInterval(camStatus, (config.cameras?.statusPollSec || 45) * 1000));
-  timers.push(setInterval(() => db.pruneOld(), 86_400_000));
+  // Re-arm the warm-up ahead of the prune so a day that just became eligible
+  // to persist gets its chance before pruneOld can delete its samples.
+  timers.push(setInterval(() => { warmRollupsStep(); db.pruneOld(); }, 86_400_000));
   timers.forEach((t) => t.unref?.());
 }
 export function stop() {

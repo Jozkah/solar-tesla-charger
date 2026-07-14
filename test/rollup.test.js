@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { computeDayRollup, foldRollups, nextDayMs, isDayComplete, shouldPersistDay } from '../server/rollup.js';
+import { computeDayRollup, foldRollups, nextDayMs, isDayComplete, shouldPersistDay, walkStartMs } from '../server/rollup.js';
 
 const DAY = 86_400_000;
 const d0 = new Date(2026, 0, 5).setHours(0, 0, 0, 0); // local midnight
@@ -240,4 +240,34 @@ test('shouldPersistDay refuses a day straddling the retention cutoff', () => {
   assert.equal(shouldPersistDay(boundaryDay, now, historyStart, retentionStart), false);
   // The very next day is entirely after the cutoff, so it's fine.
   assert.equal(shouldPersistDay(nextDayMs(boundaryDay), now, historyStart, retentionStart), true);
+});
+
+// Regression for the CRITICAL adversarial-review finding: rollupRange used to
+// clamp its walk to historyStart (earliest SURVIVING sample), so a day whose
+// samples were pruned but whose daily_stats row still exists was never walked
+// at all, and its stored rollup silently dropped out of `all`/`month`. The fix
+// walks from knownStart (earliest stored rollup OR earliest surviving sample,
+// whichever is older) instead. walkStartMs is the pure decision extracted from
+// rollupRange so this can be guarded without importing db.js/stats.js.
+test('walkStartMs walks from a stored rollup day older than the surviving samples', () => {
+  const since = 0; // e.g. range='all' asks from the epoch
+  const until = d0 + 100 * DAY;
+  const oldRollupDay = d0 - 90 * DAY; // samples for this day are long pruned
+  const newerSampleDay = d0 - 10 * DAY; // surviving samples start later
+  // knownStart must be the OLDER of the two — the whole point of this fix.
+  const knownStart = Math.min(oldRollupDay, newerSampleDay);
+  assert.equal(walkStartMs(since, until, knownStart), oldRollupDay);
+});
+
+test('walkStartMs never walks earlier than the requested `since`', () => {
+  const knownStart = d0 - 90 * DAY;
+  const since = d0 - 5 * DAY; // caller only asked for the last 5 days
+  const until = d0 + DAY;
+  assert.equal(walkStartMs(since, until, knownStart), since);
+});
+
+test('walkStartMs walks zero days when the database is empty (knownStart = Infinity)', () => {
+  const since = 0;
+  const until = d0 + DAY;
+  assert.equal(walkStartMs(since, until, Infinity), until); // loop `d = until; d < until` never runs
 });

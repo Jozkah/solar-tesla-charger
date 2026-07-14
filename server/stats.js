@@ -1,7 +1,7 @@
 // Derives the dashboard statistics from the SQLite sample/session history.
 import { queries, currentSession, saveDayRollup } from './db.js';
 import config from './config.js';
-import { computeDayRollup, foldRollups, nextDayMs, isDayComplete, shouldPersistDay } from './rollup.js';
+import { computeDayRollup, foldRollups, nextDayMs, isDayComplete, shouldPersistDay, walkStartMs } from './rollup.js';
 
 function startOfTodayMs() {
   const d = new Date();
@@ -43,12 +43,30 @@ function startOfDayMs(ts) {
   return d.getTime();
 }
 
-// The calendar day of the earliest sample ever recorded, or Infinity if the
-// database is empty. Every real day is < Infinity, so shouldPersistDay's
-// `dayStart < historyStart` check correctly refuses to persist anything.
+// The calendar day of the earliest SURVIVING sample, or Infinity if the
+// database is empty. Answers "may we PERSIST this day?" — a day must have
+// samples we can actually compute from to freeze a rollup. Every real day is
+// < Infinity, so shouldPersistDay's `dayStart < historyStart` check correctly
+// refuses to persist anything. Do NOT use this to decide how far back to WALK
+// a range (see knownStartMs) — samples get pruned but daily_stats rows don't,
+// so this alone would skip days whose only surviving record is a stored rollup.
 function historyStartMs() {
   const firstTs = queries.firstSampleTs.get()?.ts ?? null;
   return firstTs == null ? Infinity : startOfDayMs(firstTs);
+}
+
+// The calendar day of the earliest thing we KNOW about — a stored daily_stats
+// row (whose backing samples may already be pruned) or the earliest surviving
+// sample, whichever is older. Infinity if the database is entirely empty.
+// Answers "how far back do we know anything?" — this is the correct bound for
+// walking a range (rollupRange), because daily_stats outlives the sample
+// prune and must never be silently skipped.
+function knownStartMs() {
+  const firstRollup = queries.firstRollupDay.get()?.day_ts ?? null;
+  const firstSample = queries.firstSampleTs.get()?.ts ?? null;
+  const starts = [firstRollup, firstSample == null ? null : startOfDayMs(firstSample)]
+    .filter((v) => v != null);
+  return starts.length ? Math.min(...starts) : Infinity;
 }
 
 function retentionStartMs() {
@@ -62,11 +80,18 @@ function retentionStartMs() {
 // extra query inside a day-by-day loop.
 function dayRollup(dayStart, historyStart, retentionStart) {
   const dayEnd = nextDayMs(dayStart);
-  const persist = shouldPersistDay(dayStart, Date.now(), historyStart, retentionStart);
-  if (persist) {
+  const now = Date.now();
+  // A complete day's stored row must always be trusted on read, independent of
+  // whether it would be (re-)eligible for persist right now: a day rolled up
+  // while still inside the retention window stays true forever even after its
+  // samples fall out of retention and get pruned. Gating the read behind
+  // `persist` (as before) made such days silently recompute to zero once their
+  // samples were gone — this is the fix for that.
+  if (isDayComplete(dayStart, now)) {
     const hit = queries.dayRollup.get(dayStart);
     if (hit) return hit;
   }
+  const persist = shouldPersistDay(dayStart, now, historyStart, retentionStart);
   const before = queries.sampleBefore.get(dayStart);   // last charging sample; seeds prevAmps
   const after = queries.sampleAtOrAfter.get(dayEnd);   // closes the last interval
   const rows = [
@@ -82,14 +107,18 @@ function dayRollup(dayStart, historyStart, retentionStart) {
   return r;
 }
 
-// Fold every day in [since, until) — the calendar ranges. Days before real
-// history are never walked individually: they compute to zero rollups anyway
-// (no samples exist), and folding nothing is equivalent to folding zeros. This
-// is what stops an ancient `offset` from walking thousands of pre-history days.
+// Fold every day in [since, until) — the calendar ranges. Days before anything
+// we know about are never walked individually: they compute to zero rollups
+// anyway (no samples, no stored row), and folding nothing is equivalent to
+// folding zeros. This is what stops an ancient `offset` from walking thousands
+// of pre-history days. Uses knownStart (not historyStart) so a day whose
+// samples were pruned but whose daily_stats row survives is still walked —
+// see knownStartMs and rollup.js's walkStartMs for why.
 function rollupRange(since, until) {
+  const knownStart = knownStartMs();
   const historyStart = historyStartMs();
   const retentionStart = retentionStartMs();
-  const walkSince = Math.max(since, historyStart === Infinity ? until : historyStart);
+  const walkSince = walkStartMs(since, until, knownStart);
   const days = [];
   for (let d = walkSince; d < until; d = nextDayMs(d)) days.push(dayRollup(d, historyStart, retentionStart));
   return foldRollups(days);
@@ -101,12 +130,9 @@ function rollupRange(since, until) {
 // rollups matters: a day that was never viewed has no row yet, and folding
 // only stored rows would silently drop it.
 function allTimeTotals() {
-  const firstRollup = queries.firstRollupDay.get()?.day_ts ?? null;
-  const firstSample = queries.firstSampleTs.get()?.ts ?? null;
-  const starts = [firstRollup, firstSample == null ? null : startOfDayMs(firstSample)]
-    .filter((v) => v != null);
-  if (!starts.length) return foldRollups([]); // empty database
-  return rollupRange(Math.min(...starts), nextDayMs(startOfTodayMs()));
+  const knownStart = knownStartMs();
+  if (knownStart === Infinity) return foldRollups([]); // empty database
+  return rollupRange(knownStart, nextDayMs(startOfTodayMs()));
 }
 
 // Boot warm-up cursor: which day warmNextRollupDay looks at next. Module-level

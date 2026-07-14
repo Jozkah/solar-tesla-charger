@@ -56,3 +56,32 @@ export function computeDayRollup(rows, dayStart, dayEnd) {
   }
   return out;
 }
+
+// Combine day rollups into one range total. Peaks take a max; everything else
+// sums. Ratios (solarPct) and chargingMinutes are derived by the caller from
+// the summed parts — never averaged across days.
+export function foldRollups(days) {
+  const out = {
+    samples: 0,
+    car_wh: 0, car_solar_wh: 0, car_grid_wh: 0,
+    peak_w: 0, peak_amps: 0,
+    charging_samples: 0, adjustments: 0,
+    solar2_wh: 0, solax_wh: 0, export_wh: 0, import_wh: 0, used_wh: 0,
+  };
+  for (const d of days) {
+    out.samples += d.samples;
+    out.car_wh += d.car_wh;
+    out.car_solar_wh += d.car_solar_wh;
+    out.car_grid_wh += d.car_grid_wh;
+    out.charging_samples += d.charging_samples;
+    out.adjustments += d.adjustments;
+    out.solar2_wh += d.solar2_wh;
+    out.solax_wh += d.solax_wh;
+    out.export_wh += d.export_wh;
+    out.import_wh += d.import_wh;
+    out.used_wh += d.used_wh;
+    out.peak_w = Math.max(out.peak_w, d.peak_w || 0);
+    out.peak_amps = Math.max(out.peak_amps, d.peak_amps || 0);
+  }
+  return out;
+}

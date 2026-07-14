@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { computeDayRollup } from '../server/rollup.js';
+import { computeDayRollup, foldRollups } from '../server/rollup.js';
 
 const DAY = 86_400_000;
 const d0 = new Date(2026, 0, 5).setHours(0, 0, 0, 0); // local midnight
@@ -110,4 +110,28 @@ test('returns a zero row for a day with no samples', () => {
   assert.equal(r.day_ts, d0);
   assert.equal(r.samples, 0);
   assert.equal(r.car_wh, 0);
+});
+
+test('fold sums energies and maxes peaks', () => {
+  const a = { day_ts: 1, samples: 2, car_wh: 100, car_solar_wh: 60, car_grid_wh: 40,
+    peak_w: 3000, peak_amps: 16, charging_samples: 5, adjustments: 1,
+    solar2_wh: 10, solax_wh: 5, export_wh: 7, import_wh: 3, used_wh: 20 };
+  const b = { day_ts: 2, samples: 3, car_wh: 200, car_solar_wh: 150, car_grid_wh: 50,
+    peak_w: 7000, peak_amps: 32, charging_samples: 6, adjustments: 2,
+    solar2_wh: 20, solax_wh: 5, export_wh: 3, import_wh: 1, used_wh: 30 };
+  const t = foldRollups([a, b]);
+  assert.equal(t.samples, 5);
+  assert.equal(t.car_wh, 300);
+  assert.equal(t.car_solar_wh, 210);
+  assert.equal(t.adjustments, 3);
+  assert.equal(t.peak_w, 7000);   // max, not sum
+  assert.equal(t.peak_amps, 32);  // max, not sum
+  assert.equal(t.used_wh, 50);
+});
+
+test('fold of nothing is all zeros', () => {
+  const t = foldRollups([]);
+  assert.equal(t.samples, 0);
+  assert.equal(t.car_wh, 0);
+  assert.equal(t.peak_w, 0);
 });

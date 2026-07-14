@@ -396,7 +396,7 @@ All routes are defined in `server/index.js`.
 |--------|------|------|---------|
 | GET  | `/api/state` | – | Live snapshot (meters, car, WC, SolaX, weather, kasa, cameras, computed target). |
 | GET  | `/api/stream` | – | Server-Sent Events stream of live state (~2 s, plus a 25 s keepalive ping). |
-| GET  | `/api/stats?range=today\|session\|all` | – | Aggregated statistics. |
+| GET  | `/api/stats?range=day\|week\|month\|today\|session\|all&offset=N` | – | Aggregated statistics (default `today`). `day`/`week`/`month` are calendar periods (weeks start Monday); `offset=N` steps N periods back (0 = current, 1 = previous, …). |
 | GET  | `/api/series?hours=N` | – | Downsampled time series for charts (N clamped to 1…720). |
 | GET  | `/api/health` | – | `{ ok, ts }`. |
 | GET  | `/api/events` | – | Recent charging events. |

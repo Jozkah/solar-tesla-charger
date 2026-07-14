@@ -331,7 +331,7 @@ POSTs return `{ "ok": true, ... }`.
 |--------|------|--------------|---------|
 | GET | `/api/state` | – | Live state snapshot (meters, car, Wall Connector, SolaX, weather, computed target, mode, override, schedule). |
 | GET | `/api/stream` | – | Server-Sent Events stream; pushes a fresh snapshot every live-loop tick (~2 s). |
-| GET | `/api/stats` | `?range=today\|session\|all` | Aggregated statistics (default `today`). |
+| GET | `/api/stats` | `?range=day\|week\|month\|today\|session\|all` `&offset=N` | Aggregated statistics (default `today`). `day`/`week`/`month` are calendar periods (weeks start Monday); `offset=N` steps N periods back (0 = current, 1 = previous, …). |
 | GET | `/api/series` | `?hours=N` (1–720) | Downsampled time-series for the chart. |
 | POST | `/api/mode` | `{ "mode": "auto"\|"pause" }` | Switch automation mode (switching to `auto` clears any override). |
 | POST | `/api/override` | `{ "amps": N, "expiresInMin"?: N }` | Set/adjust the sticky forced-charge override (amps clamped to min/max). |

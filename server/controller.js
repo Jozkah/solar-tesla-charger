@@ -309,6 +309,13 @@ let fullChargeLatch = false;
 let chargeStartedAt = 0;
 let wasCharging = false;
 let lastConnSeen = null; // WC plugged state, to detect replug and refresh the car
+// The WC's veto over a car-claimed charge only counts once it has held for a
+// while: vitals are unsmoothed, so one odd read (contactor closed, momentary
+// 0 A) would flip isCharging for a single live tick — enough to push a bogus
+// "charging stopped" notification and re-issue a start command. A phantom charge
+// lasts minutes, so waiting costs nothing; the car's own poll is 90s behind.
+let wcStoppedSince = 0; // first tick the WC reported no current (0 = current flowing)
+const WC_VETO_MS = 15_000;
 
 // --- Battery capacity auto-estimate ------------------------------------------
 // Learned from real charges: capacity ≈ charge_energy_added / SoC gained (the
@@ -370,8 +377,26 @@ function computeDecision(meters, car, wc) {
   // Trust the car's state when we have it: with climate/AC on while plugged the
   // WC reports a real ≥minAmps draw that is NOT charging. The WC heuristic only
   // applies when car telemetry is unavailable.
-  const carState = car?.chargingState;
-  const isCharging = !!(carState === 'Charging' || carState === 'Starting'
+  //
+  // But the car/API can miss a stop (TeslaMateApi outage, TeslaMate lag): a frozen
+  // 'Charging' snapshot would otherwise report a phantom charge forever, and the
+  // phantom chargeW inflates the displayed solar via the energy-balance floor.
+  // Two guards: a stale snapshot loses its charging-asserting vote (only those —
+  // a frozen 'Stopped'/'Complete' must keep blocking the WC fallback, or a
+  // conditioning draw would read as a charge), and the WC — local ground truth
+  // for current actually flowing — vetoes a claimed charge once it has read no
+  // current for WC_VETO_MS. 'Starting' is exempt (contactor hasn't closed yet).
+  const rawState = car?.chargingState;
+  const carState = car?.stale && (rawState === 'Charging' || rawState === 'Starting') ? null : rawState;
+  // A WC reading no current can't veto while we're mid-throttle-reset: we issued
+  // that stop ourselves and restart within seconds, so the session continues.
+  const wcNoCurrent = wcOk && !wc.charging;
+  if (!wcNoCurrent) wcStoppedSince = 0;
+  else if (!wcStoppedSince) wcStoppedSince = Date.now();
+  const wcSaysStopped = wcNoCurrent && !throttleResetStopAt
+    && Date.now() - wcStoppedSince >= WC_VETO_MS;
+  const isCharging = !!(carState === 'Starting'
+    || (carState === 'Charging' && !wcSaysStopped)
     || (carState == null && wcOk && wc.charging && wcCurrent >= (C.minAmps - 0.5)));
   const connected = wcOk ? wc.connected : !!car?.pluggedIn;
   // Plugged in, not charging, but still drawing power = conditioning / Sentry / standby.
@@ -380,7 +405,10 @@ function computeDecision(meters, car, wc) {
   wasCharging = isCharging;
   const voltage = pickVoltage(meters, car, wc);
   const actualAmps = (wcOk ? wc.currentA : car?.chargerActualCurrent) ?? null;
-  const chargeW = wcOk && wc.power != null ? wc.power : computeChargeW(car, voltage);
+  // WC power is measured and always trustworthy. The car-derived fallback is only
+  // meaningful during a real charge — a stale snapshot's charger_power would
+  // otherwise report phantom watts after the car already stopped.
+  const chargeW = wcOk && wc.power != null ? wc.power : (isCharging ? computeChargeW(car, voltage) : 0);
   const commandedAmps = car?.chargeAmps ?? lastSetAmps ?? null;
   const surplusW = meters.exportW + (isCharging ? chargeW : 0) - C.bufferWatts;
   const carMax = car?.chargeCurrentRequestMax;

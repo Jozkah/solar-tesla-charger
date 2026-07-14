@@ -2,9 +2,10 @@
 // Owns range + offset state, fetching, and the label; callers just render.
 (function () {
   const PERIOD_RANGES = ['day', 'week', 'month'];
-  // Matches the server's clamp — past it the response echoes a different offset
-  // and the stale-response guard would drop every update.
-  const MAX_OFFSET = 1000;
+  // Matches the server's per-range clamp (server/index.js RANGE_MAX_OFFSET) —
+  // past it the response echoes a different offset than requested, and the
+  // stale-response guard below would then silently drop every update.
+  const RANGE_MAX_OFFSET = { day: 3650, week: 520, month: 120 };
 
   function periodLabel(st) {
     if (!PERIOD_RANGES.includes(st.range)) return '';
@@ -16,7 +17,12 @@
     }
     if (st.range === 'week') {
       if (st.offset === 0) return 'This week';
-      const end = new Date(st.until - 86400_000);
+      // Calendar day before `until`, not a fixed 24h subtraction — a 23-hour
+      // spring-forward week would land at 23:00 the previous day and the
+      // label would read one day short (e.g. "23 – 28 Mar" for a week ending
+      // the 29th).
+      const end = new Date(st.until);
+      end.setDate(end.getDate() - 1);
       const s = since.toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
       const e = end.toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
       return `${s} – ${e}`;
@@ -49,7 +55,7 @@
       onData(st);
     }
 
-    if (prevEl) prevEl.addEventListener('click', () => { if (offset < MAX_OFFSET) { offset++; refresh(); } });
+    if (prevEl) prevEl.addEventListener('click', () => { if (offset < (RANGE_MAX_OFFSET[range] ?? 0)) { offset++; refresh(); } });
     if (nextEl) nextEl.addEventListener('click', () => { if (offset > 0) { offset--; refresh(); } });
     if (segEl) {
       segEl.querySelectorAll('button').forEach((b) => b.addEventListener('click', () => {

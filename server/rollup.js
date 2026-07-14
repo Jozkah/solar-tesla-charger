@@ -73,6 +73,28 @@ export function isDayComplete(dayStart, nowMs) {
   return nextDayMs(dayStart) <= nowMs;
 }
 
+// Whether a day's rollup is safe to freeze into daily_stats forever. All three
+// conditions matter, because a persisted rollup is NEVER recomputed:
+//   * complete    — a still-running day would freeze its mid-day totals.
+//   * historyStart — the calendar day of the earliest sample ever recorded. A
+//     day before this has no data by definition. Persisting a zero row for it
+//     is what drags firstRollupDay back arbitrarily — an old `offset` (e.g. a
+//     month offset resolving to the 1940s) would otherwise walk and persist
+//     every day between it and today, blocking the event loop for minutes.
+//   * retentionStart — pruneOld deletes samples older than sampleRetentionDays
+//     on a timer that doesn't align to day boundaries, so the day straddling
+//     that cutoff has already lost half its samples by the time it's first
+//     viewed. Persisting from the surviving half would freeze a wrong total;
+//     only persist once the whole day is younger than the retention window.
+// Days that fail these checks still COMPUTE a rollup (so totals stay correct)
+// — they just aren't written to daily_stats.
+export function shouldPersistDay(dayStart, nowMs, historyStart, retentionStart) {
+  if (!isDayComplete(dayStart, nowMs)) return false;
+  if (historyStart == null || dayStart < historyStart) return false;
+  if (retentionStart == null || dayStart < retentionStart) return false;
+  return true;
+}
+
 // Combine day rollups into one range total. Peaks take a max; everything else
 // sums. Ratios (solarPct) and chargingMinutes are derived by the caller from
 // the summed parts — never averaged across days.

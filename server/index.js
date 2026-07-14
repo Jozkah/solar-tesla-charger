@@ -42,12 +42,21 @@ app.get('/api/stream', (req, res) => {
   });
 });
 
+// Max `offset` per calendar range — chosen so the walk can never reach before
+// any plausible install date (day: ~10y, week: ~10y, month: 10y). A flat clamp
+// across all three let `month` reach ~83 years back (offset 1000 = March
+// 1943), which is old enough to precede any real history and poison the DB —
+// see the historyStart guard in stats.js/rollup.js. Ranges without an offset
+// (today/session/all) just clamp to 0.
+const RANGE_MAX_OFFSET = { day: 3650, week: 520, month: 120 };
+
 app.get('/api/stats', (req, res) => {
   const range = ['today', 'session', 'all', 'day', 'week', 'month'].includes(req.query.range)
     ? req.query.range
     : 'today';
   // Periods back from the current one (day/week/month ranges only).
-  const offset = Math.min(1000, Math.max(0, Math.trunc(Number(req.query.offset) || 0)));
+  const maxOffset = RANGE_MAX_OFFSET[range] ?? 0;
+  const offset = Math.min(maxOffset, Math.max(0, Math.trunc(Number(req.query.offset) || 0)));
   res.json(stats.getStats(range, offset));
 });
 

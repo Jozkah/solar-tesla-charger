@@ -1,7 +1,7 @@
 // Derives the dashboard statistics from the SQLite sample/session history.
 import { queries, currentSession, saveDayRollup } from './db.js';
 import config from './config.js';
-import { computeDayRollup, foldRollups, nextDayMs, isDayComplete } from './rollup.js';
+import { computeDayRollup, foldRollups, nextDayMs, isDayComplete, shouldPersistDay } from './rollup.js';
 
 function startOfTodayMs() {
   const d = new Date();
@@ -37,13 +37,33 @@ export function periodBounds(range, offset = 0) {
   return null;
 }
 
-// One day's rollup: stored rows for completed days, live compute for today.
-// A completed day is immutable, so it's computed once and kept forever — this
-// is what makes week/month/all cheap.
-function dayRollup(dayStart) {
+function startOfDayMs(ts) {
+  const d = new Date(ts);
+  d.setHours(0, 0, 0, 0);
+  return d.getTime();
+}
+
+// The calendar day of the earliest sample ever recorded, or Infinity if the
+// database is empty. Every real day is < Infinity, so shouldPersistDay's
+// `dayStart < historyStart` check correctly refuses to persist anything.
+function historyStartMs() {
+  const firstTs = queries.firstSampleTs.get()?.ts ?? null;
+  return firstTs == null ? Infinity : startOfDayMs(firstTs);
+}
+
+function retentionStartMs() {
+  return Date.now() - config.db.sampleRetentionDays * 86_400_000;
+}
+
+// One day's rollup: stored rows for eligible completed days, live compute
+// otherwise. A persisted rollup is immutable and kept forever — this is what
+// makes week/month/all cheap. `historyStart`/`retentionStart` are passed in
+// (computed once per call by the caller, never per day) so this never runs an
+// extra query inside a day-by-day loop.
+function dayRollup(dayStart, historyStart, retentionStart) {
   const dayEnd = nextDayMs(dayStart);
-  const complete = isDayComplete(dayStart, Date.now());
-  if (complete) {
+  const persist = shouldPersistDay(dayStart, Date.now(), historyStart, retentionStart);
+  if (persist) {
     const hit = queries.dayRollup.get(dayStart);
     if (hit) return hit;
   }
@@ -55,23 +75,24 @@ function dayRollup(dayStart) {
     ...(after ? [after] : []),
   ];
   const r = computeDayRollup(rows, dayStart, dayEnd);
-  // Never freeze a day that's still running. Empty days are stored too, so a
-  // day the server was off isn't recomputed on every future view.
-  if (complete) saveDayRollup(r);
+  // A day that fails shouldPersistDay (still running, before real history, or
+  // straddling the retention cutoff) still computes correctly above — it's
+  // just never written to daily_stats, so it can't freeze a wrong value.
+  if (persist) saveDayRollup(r);
   return r;
 }
 
-// Fold every day in [since, until) — the calendar ranges.
+// Fold every day in [since, until) — the calendar ranges. Days before real
+// history are never walked individually: they compute to zero rollups anyway
+// (no samples exist), and folding nothing is equivalent to folding zeros. This
+// is what stops an ancient `offset` from walking thousands of pre-history days.
 function rollupRange(since, until) {
+  const historyStart = historyStartMs();
+  const retentionStart = retentionStartMs();
+  const walkSince = Math.max(since, historyStart === Infinity ? until : historyStart);
   const days = [];
-  for (let d = since; d < until; d = nextDayMs(d)) days.push(dayRollup(d));
+  for (let d = walkSince; d < until; d = nextDayMs(d)) days.push(dayRollup(d, historyStart, retentionStart));
   return foldRollups(days);
-}
-
-function startOfDayMs(ts) {
-  const d = new Date(ts);
-  d.setHours(0, 0, 0, 0);
-  return d.getTime();
 }
 
 // 'all' spans from the earliest thing we know about — a stored rollup (whose
@@ -86,6 +107,33 @@ function allTimeTotals() {
     .filter((v) => v != null);
   if (!starts.length) return foldRollups([]); // empty database
   return rollupRange(Math.min(...starts), nextDayMs(startOfTodayMs()));
+}
+
+// Boot warm-up cursor: which day warmNextRollupDay looks at next. Module-level
+// so repeated setImmediate calls resume where the last one left off; lost on
+// restart, which is harmless — the next boot just starts the scan over, and
+// already-persisted days are skipped almost for free (a single indexed read).
+let warmCursor = null;
+
+// Compute+persist (or cheaply skip, if already stored) exactly one day's
+// rollup, advancing the cursor. Called from controller.js's boot warm-up via
+// setImmediate, one day per tick, so the synchronous DB work (~25ms/day worst
+// case) never blocks the live/control loops or the SSE feed for more than one
+// day at a stretch. Returns true if there's more to warm, false when the
+// cursor has reached today (nothing further to do this run).
+export function warmNextRollupDay() {
+  const historyStart = historyStartMs();
+  if (historyStart === Infinity) return false; // empty database — nothing to warm
+  const today = startOfTodayMs();
+  if (warmCursor == null || warmCursor < historyStart) warmCursor = historyStart;
+  if (warmCursor >= today) return false; // reached today — done for this run
+  const day = warmCursor;
+  warmCursor = nextDayMs(warmCursor);
+  // dayRollup() itself returns the cached row immediately when one already
+  // exists (see the `persist` cache-hit check above), so an already-warmed day
+  // costs one indexed lookup here, not a re-computation.
+  dayRollup(day, historyStart, retentionStartMs());
+  return true;
 }
 
 export function getStats(range = 'today', offset = 0) {
@@ -214,4 +262,4 @@ function round0(n) {
   return n == null ? 0 : Math.round(n);
 }
 
-export default { getStats, getSeries };
+export default { getStats, getSeries, warmNextRollupDay };

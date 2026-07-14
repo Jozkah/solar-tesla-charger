@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { computeDayRollup, foldRollups, nextDayMs, isDayComplete } from '../server/rollup.js';
+import { computeDayRollup, foldRollups, nextDayMs, isDayComplete, shouldPersistDay } from '../server/rollup.js';
 
 const DAY = 86_400_000;
 const d0 = new Date(2026, 0, 5).setHours(0, 0, 0, 0); // local midnight
@@ -193,4 +193,51 @@ test('isDayComplete is false for today and true for yesterday', () => {
   assert.equal(isDayComplete(todayMidnight.getTime(), now), false);
   // Yesterday's next midnight has already arrived, so it's safe to persist.
   assert.equal(isDayComplete(yesterdayMidnight.getTime(), now), true);
+});
+
+// shouldPersistDay guards the March-1943 bug: GET /api/stats?range=month&offset=1000
+// resolved to a real calendar month decades before any recorded sample, and the
+// server persisted 31 zero rows for it because dayRollup only checked isDayComplete.
+// That dragged firstRollupDay back to 1943, so the next `all` walked ~30,400 days,
+// writing 30,451 rows and blocking the event loop for ~73 seconds — during a live
+// charge, that's the control loop that commands the car.
+test('shouldPersistDay refuses a day before recorded history, even if complete', () => {
+  const now = new Date(2026, 6, 14).setHours(0, 0, 0, 0); // "today" for this test
+  const historyStart = new Date(2026, 5, 1).setHours(0, 0, 0, 0); // earliest real sample: June 1
+  const retentionStart = now - 60 * DAY;
+  const longAgo = new Date(1943, 2, 1).setHours(0, 0, 0, 0); // March 1943 — complete, ancient
+  assert.equal(isDayComplete(longAgo, now), true, 'sanity: the day itself is complete');
+  assert.equal(shouldPersistDay(longAgo, now, historyStart, retentionStart), false);
+});
+
+test('shouldPersistDay allows a complete day at/after historyStart and within retention', () => {
+  const now = new Date(2026, 6, 14).setHours(0, 0, 0, 0);
+  const historyStart = new Date(2026, 5, 1).setHours(0, 0, 0, 0);
+  const retentionStart = now - 60 * DAY;
+  const yesterday = now - DAY;
+  assert.equal(shouldPersistDay(yesterday, now, historyStart, retentionStart), true);
+  // The history-start day itself is eligible too (>=, not >).
+  assert.equal(shouldPersistDay(historyStart, now, historyStart, retentionStart), true);
+});
+
+test('shouldPersistDay refuses an incomplete (still-running) day regardless of history', () => {
+  const now = new Date(2026, 6, 14, 12).getTime(); // mid-day "now"
+  const today = new Date(2026, 6, 14).setHours(0, 0, 0, 0);
+  const historyStart = new Date(2026, 0, 1).setHours(0, 0, 0, 0);
+  const retentionStart = now - 60 * DAY;
+  assert.equal(shouldPersistDay(today, now, historyStart, retentionStart), false);
+});
+
+// Guards the retention-boundary bug: pruneOld runs on a timer that doesn't align
+// to day boundaries, so the day straddling `now - sampleRetentionDays` has already
+// lost half its samples the first time it's viewed. Persisting from the surviving
+// half would freeze a wrong total forever (rollups are never recomputed).
+test('shouldPersistDay refuses a day straddling the retention cutoff', () => {
+  const now = new Date(2026, 6, 14).setHours(0, 0, 0, 0);
+  const historyStart = new Date(2020, 0, 1).setHours(0, 0, 0, 0); // long real history
+  const boundaryDay = now - 60 * DAY; // pruneOld cuts mid-day here, not at midnight
+  const retentionStart = boundaryDay + 12 * 3_600_000; // cutoff falls mid-day
+  assert.equal(shouldPersistDay(boundaryDay, now, historyStart, retentionStart), false);
+  // The very next day is entirely after the cutoff, so it's fine.
+  assert.equal(shouldPersistDay(nextDayMs(boundaryDay), now, historyStart, retentionStart), true);
 });

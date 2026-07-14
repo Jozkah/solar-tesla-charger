@@ -473,10 +473,18 @@ $('viewerClose').addEventListener('click', closeViewer);
 $('viewer').addEventListener('click', (e) => { if (e.target.id === 'viewer') closeViewer(); });
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape') { closeViewer(); closeWxModal(); } });
 
-// --- Whole-home energy totals (today), from /api/stats ----------------------
+// --- Whole-home energy totals, from /api/stats -------------------------------
+// Range/offset state, fetching and the label live in period-nav.js (shared with
+// /charger); this page only renders the four tiles from the response.
 const fmtKwh = (wh) => (wh == null ? '–' : (wh / 1000).toFixed(2));
-async function loadStats() {
-  let st; try { st = await (await fetch('/api/stats?range=today')).json(); } catch { return; }
+const statsNav = createPeriodNav({
+  navEl: $('homePeriodNav'), labelEl: $('homePeriodLabel'),
+  prevEl: $('homePeriodPrev'), nextEl: $('homePeriodNext'), segEl: $('homeRangeSeg'),
+  onData: renderStats,
+});
+function loadStats() { statsNav.refresh(); }
+
+function renderStats(st) {
   const h = st.home || {};
   $('stSolarGen').textContent = fmtKwh(h.solarGeneratedWh);
   $('stExported').textContent = fmtKwh(h.exportedWh);

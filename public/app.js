@@ -68,8 +68,6 @@ function applyWeatherBg(w) {
   tryLoad(['jpg', 'png', 'webp']);
 }
 
-let range = 'day';
-let statsOffset = 0; // periods back from current day/week/month (0 = current)
 let lastState = null;
 let bannerDismissed = null; // banner content signature the user tapped away
 let chartData = []; // {ts, exportW, importW, chargeW, solarW}
@@ -285,6 +283,11 @@ function renderCards(s) {
 const TOGGLE_BASE = 'lg-btn w-full py-4 text-[17px] ';
 function renderControls(s) {
   document.querySelectorAll('#modeSeg button').forEach((b) => b.classList.toggle('active', b.dataset.mode === s.mode));
+  // Paused means paused: hide every control that only acts on a live charge.
+  // Relies on the [hidden] !important rule — Tailwind's .flex on these cards
+  // outranks preflight's [hidden] on its own.
+  const paused = s.mode === 'pause';
+  for (const id of ['limitCard', 'chargeToggle', 'boostCard', 'schedCard']) $(id).hidden = paused;
   const btn = $('chargeToggle');
   if (!btn._busy) {
     if (s.charging) { btn.textContent = '■ Stop charge'; btn.className = TOGGLE_BASE + 'lg-btn-red'; btn.dataset.action = 'stop'; }
@@ -512,44 +515,15 @@ box.addEventListener('touchmove', (e) => onHover(e.touches[0].clientX), { passiv
 box.addEventListener('touchend', hideHover);
 
 // --- Stats ------------------------------------------------------------------
-const PERIOD_RANGES = ['day', 'week', 'month'];
+const statsNav = createPeriodNav({
+  navEl: $('periodNav'), labelEl: $('periodLabel'),
+  prevEl: $('periodPrev'), nextEl: $('periodNext'), segEl: $('rangeSeg'),
+  onData: renderStats,
+});
+const refreshStats = () => statsNav.refresh();
 
-function periodLabel(st) {
-  if (!PERIOD_RANGES.includes(st.range)) return '';
-  const since = new Date(st.since);
-  if (st.range === 'day') {
-    if (st.offset === 0) return 'Today';
-    if (st.offset === 1) return 'Yesterday';
-    return since.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' });
-  }
-  if (st.range === 'week') {
-    if (st.offset === 0) return 'This week';
-    const end = new Date(st.until - 86400_000);
-    const s = since.toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
-    const e = end.toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
-    return `${s} – ${e}`;
-  }
-  if (st.offset === 0) return 'This month';
-  return since.toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
-}
-
-async function refreshStats() {
-  let st;
-  try {
-    st = await (await fetch(`/api/stats?range=${range}&offset=${statsOffset}`)).json();
-  } catch { return; }
-  // Stale response from a range/offset the user already navigated away from.
-  if (st.range !== range || (PERIOD_RANGES.includes(range) && st.offset !== statsOffset)) return;
-
-  const isPeriod = PERIOD_RANGES.includes(range);
-  $('periodNav').hidden = !isPeriod;
-  if (isPeriod) {
-    $('periodLabel').textContent = periodLabel(st);
-    $('periodNext').disabled = statsOffset === 0;
-    $('periodNext').style.opacity = statsOffset === 0 ? '.35' : '1';
-  }
-
-  // Car-focused tiles only — the whole-home totals live on the home dashboard.
+// Car-focused tiles only — the whole-home totals live on the home dashboard.
+function renderStats(st) {
   const c = st.car || {};
   const cells = [
     ['Charged', fmtKwh(c.energyWh), 'kWh'],
@@ -574,21 +548,6 @@ async function post(path, body) {
   return (await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined })).json();
 }
 document.querySelectorAll('#modeSeg button').forEach((b) => b.addEventListener('click', () => post('/api/mode', { mode: b.dataset.mode })));
-document.querySelectorAll('#rangeSeg button').forEach((b) => b.addEventListener('click', () => {
-  range = b.dataset.range;
-  statsOffset = 0;
-  document.querySelectorAll('#rangeSeg button').forEach((x) => x.classList.toggle('active', x === b));
-  refreshStats();
-}));
-// Matches the server's clamp — past it the response would echo a different offset
-// and refreshStats' stale-response guard would drop every update.
-const MAX_OFFSET = 1000;
-$('periodPrev').addEventListener('click', () => {
-  if (statsOffset < MAX_OFFSET) { statsOffset++; refreshStats(); }
-});
-$('periodNext').addEventListener('click', () => {
-  if (statsOffset > 0) { statsOffset--; refreshStats(); }
-});
 function postSchedule() {
   post('/api/schedule', {
     enabled: $('schedEnabled').checked,

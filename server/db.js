@@ -3,6 +3,7 @@
 // report "energy charged this session/today/total".
 import { DatabaseSync } from 'node:sqlite';
 import config from './config.js';
+import { LAST_CHARGING_SAMPLE_BEFORE } from './sql.js';
 
 const db = new DatabaseSync(config.paths.db);
 db.exec('PRAGMA journal_mode = WAL;');
@@ -36,6 +37,23 @@ db.exec(`
     peak_w        REAL DEFAULT 0,
     peak_amps     INTEGER DEFAULT 0,
     adjustments   INTEGER DEFAULT 0
+  );
+
+  CREATE TABLE IF NOT EXISTS daily_stats (
+    day_ts           INTEGER PRIMARY KEY,
+    samples          INTEGER,
+    car_wh           REAL,
+    car_solar_wh     REAL,
+    car_grid_wh      REAL,
+    peak_w           REAL,
+    peak_amps        REAL,
+    charging_samples INTEGER,
+    adjustments      INTEGER,
+    solar2_wh        REAL,
+    solax_wh         REAL,
+    export_wh        REAL,
+    import_wh        REAL,
+    used_wh          REAL
   );
 
   CREATE INDEX IF NOT EXISTS idx_samples_ts ON samples(ts);
@@ -108,14 +126,46 @@ export function updateSession(s) {
   );
 }
 
+// --- Daily stats rollups ---------------------------------------------------
+
+const saveDayRollupStmt = db.prepare(`
+  INSERT INTO daily_stats
+    (day_ts, samples, car_wh, car_solar_wh, car_grid_wh, peak_w, peak_amps,
+     charging_samples, adjustments, solar2_wh, solax_wh, export_wh, import_wh, used_wh)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  ON CONFLICT(day_ts) DO UPDATE SET
+    samples=excluded.samples, car_wh=excluded.car_wh, car_solar_wh=excluded.car_solar_wh,
+    car_grid_wh=excluded.car_grid_wh, peak_w=excluded.peak_w, peak_amps=excluded.peak_amps,
+    charging_samples=excluded.charging_samples, adjustments=excluded.adjustments,
+    solar2_wh=excluded.solar2_wh, solax_wh=excluded.solax_wh, export_wh=excluded.export_wh,
+    import_wh=excluded.import_wh, used_wh=excluded.used_wh
+`);
+
+// Persist one completed day's rollup. Callers must never pass today — a
+// partially-elapsed day would be frozen at its mid-day value.
+export function saveDayRollup(r) {
+  saveDayRollupStmt.run(
+    r.day_ts, r.samples, r.car_wh, r.car_solar_wh, r.car_grid_wh, r.peak_w, r.peak_amps,
+    r.charging_samples, r.adjustments, r.solar2_wh, r.solax_wh, r.export_wh, r.import_wh, r.used_wh,
+  );
+}
+
 // --- Queries used by stats.js ----------------------------------------------
 
 export const queries = {
   samplesSince: db.prepare('SELECT * FROM samples WHERE ts >= ? ORDER BY ts ASC'),
   samplesBetween: db.prepare('SELECT * FROM samples WHERE ts >= ? AND ts < ? ORDER BY ts ASC'),
+  // Seeds prevAmps for a day's rollup — see server/sql.js for the WHY (must be
+  // the last CHARGING sample, not simply the last sample). Shared as a string
+  // with test/sql.test.js since db.js itself can't be imported from a test.
+  sampleBefore: db.prepare(LAST_CHARGING_SAMPLE_BEFORE),
+  sampleAtOrAfter: db.prepare('SELECT * FROM samples WHERE ts >= ? ORDER BY ts ASC LIMIT 1'),
   sessionsSince: db.prepare('SELECT * FROM sessions WHERE started_at >= ? ORDER BY id DESC'),
   allSessions: db.prepare('SELECT * FROM sessions ORDER BY id DESC'),
   peakAllTime: db.prepare('SELECT MAX(charge_w) AS peak_w, MAX(charge_amps) AS peak_amps FROM samples'),
+  dayRollup: db.prepare('SELECT * FROM daily_stats WHERE day_ts = ?'),
+  firstRollupDay: db.prepare('SELECT MIN(day_ts) AS day_ts FROM daily_stats'),
+  firstSampleTs: db.prepare('SELECT MIN(ts) AS ts FROM samples'),
 };
 
 const pruneStmt = db.prepare('DELETE FROM samples WHERE ts < ?');

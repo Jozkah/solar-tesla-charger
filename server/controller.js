@@ -24,6 +24,7 @@ import * as notify from './notify.js';
 import * as kasa from './kasa.js';
 import * as cameras from './cameras.js';
 import * as db from './db.js';
+import * as stats from './stats.js';
 
 const C = config.control;
 
@@ -313,7 +314,17 @@ function computeDecision(meters, car, wc) {
   // A WC reading no current can't veto while we're mid-throttle-reset: we issued
   // that stop ourselves and restart within seconds, so the session continues.
   const wcNoCurrent = wcOk && !wc.charging;
-  if (!wcNoCurrent) wcStoppedSince = 0;
+  // Hold the timer at zero for the whole throttle-reset window, not just while
+  // deciding wcSaysStopped: the reset's own chargeStop makes wcNoCurrent true
+  // and would otherwise let wcStoppedSince start counting during the stop, so
+  // by the time the reset clears (~30s) and the charge restarts, the timer is
+  // already ~30s old and the veto fires on the FIRST tick — before the car has
+  // drawn any current. That flips isCharging false, fires a bogus "charging
+  // stopped" push, splits one session into two, and re-issues chargeStart —
+  // exactly the flapping the debounce exists to prevent. Resetting the timer
+  // here instead gives the restart a fresh full WC_VETO_MS window once current
+  // genuinely stops flowing again.
+  if (!wcNoCurrent || throttleResetStopAt) wcStoppedSince = 0;
   else if (!wcStoppedSince) wcStoppedSince = Date.now();
   const wcSaysStopped = wcNoCurrent && !throttleResetStopAt
     && Date.now() - wcStoppedSince >= WC_VETO_MS;
@@ -725,6 +736,48 @@ async function safeCmd(label, fn) {
   }
 }
 
+// Backfill missing daily_stats rows so a day's samples get rolled up while
+// they still exist — otherwise a day nobody happened to view before it ages
+// out of sampleRetentionDays loses its data from `all` forever, and the first
+// `all`/`month` view after a long-uptime deploy would stall the loop rolling
+// up a big backlog in one go. One day per setImmediate tick: warmNextRollupDay
+// does at most one dayRollup compute (~25ms worst case) then returns, so this
+// never blocks the ~2s live loop, the SSE feed, or the control loop that
+// commands the car. Already-persisted days are skipped almost for free, so
+// this is safe and cheap to run from scratch on every boot. Harmless if the
+// process exits mid-warm — the next boot just resumes the scan.
+//
+// Called once at boot AND re-armed on the daily timer (see start()), ahead of
+// pruneOld(): a day is only persistable for a ~sampleRetentionDays window
+// (shouldPersistDay refuses anything before retentionStart), and that window
+// slides forward every day. A boot-only warm-up covers history up to the day
+// it ran; on a machine that stays up longer than the retention window, every
+// day *since* boot would otherwise never get scanned (warmCursor already sat
+// at "today" from the first run) and would eventually age out of retention
+// and get pruned — losing that day's data from `all` for good. Re-arming
+// daily lets the cursor resume from wherever it stopped and catch up.
+let warmFailStreak = 0;
+const WARM_MAX_FAIL_STREAK = 5; // give up for this run after this many in a row
+function warmRollupsStep() {
+  let more = false;
+  try {
+    more = stats.warmNextRollupDay();
+    warmFailStreak = 0;
+  } catch (e) {
+    // A background backfill failure is not user-actionable, so it must not
+    // hijack the dashboard's error banner (state.lastError) — log it instead,
+    // prefixed so it's identifiable in the logs. warmCursor has already
+    // advanced past the failing day inside warmNextRollupDay, so retrying
+    // moves on to the next day rather than looping on the same one; the
+    // streak counter just bounds how long we keep trying if failures persist
+    // (e.g. a corrupt run of days) so this can't retry forever.
+    warmFailStreak++;
+    console.error(`rollup warm: ${e?.message || e}`);
+    more = warmFailStreak < WARM_MAX_FAIL_STREAK;
+  }
+  if (more) setImmediate(warmRollupsStep);
+}
+
 export function start() {
   if (timers.length) return;
   const live = () => liveCycle().catch((e) => { state.lastError = String(e?.message || e); });
@@ -735,11 +788,14 @@ export function start() {
   camStatus();
   setTimeout(car, 1500); // first car read shortly after meters
   setTimeout(ctrl, 2500); // let meters + car populate first
+  setImmediate(warmRollupsStep); // backfill missing daily_stats rows, one day per tick
   timers.push(setInterval(live, (C.livePollSec || 2) * 1000));
   timers.push(setInterval(ctrl, C.pollIntervalSec * 1000));
   timers.push(setInterval(car, (C.carPollSec || 90) * 1000));
   timers.push(setInterval(camStatus, (config.cameras?.statusPollSec || 45) * 1000));
-  timers.push(setInterval(() => db.pruneOld(), 86_400_000));
+  // Re-arm the warm-up ahead of the prune so a day that just became eligible
+  // to persist gets its chance before pruneOld can delete its samples.
+  timers.push(setInterval(() => { warmRollupsStep(); db.pruneOld(); }, 86_400_000));
   timers.forEach((t) => t.unref?.());
 }
 export function stop() {

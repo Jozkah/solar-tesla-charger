@@ -200,7 +200,7 @@
       <button data-mode="pause">⏸ Pause</button>
     </div>
 
-    <div class="glass rounded-3xl p-5 flex flex-col gap-4">
+    <div id="limitCard" class="glass rounded-3xl p-5 flex flex-col gap-4">
       <div class="flex justify-between items-center">
         <div>
           <div id="ovLabel" class="text-mut text-[11px] font-semibold tracking-wider uppercase">Charge limit</div>
@@ -218,7 +218,7 @@
     <button id="chargeToggle" class="lg-btn lg-btn-green w-full py-4 text-[17px]">▶ Start charge</button>
 
     <!-- Opportunistic battery-limit increase (charge past the set % on free solar) -->
-    <div class="glass rounded-3xl p-5 flex flex-col gap-4">
+    <div id="boostCard" class="glass rounded-3xl p-5 flex flex-col gap-4">
       <div class="flex justify-between items-center">
         <div>
           <div class="text-mut text-[11px] font-semibold tracking-wider uppercase">Allow battery limit increase</div>
@@ -233,7 +233,7 @@
     </div>
 
     <!-- Overnight / scheduled grid charge -->
-    <div class="glass rounded-3xl p-5 flex flex-col gap-4">
+    <div id="schedCard" class="glass rounded-3xl p-5 flex flex-col gap-4">
       <div class="flex justify-between items-center">
         <div>
           <div class="text-mut text-[11px] font-semibold tracking-wider uppercase">Overnight charge</div>
@@ -278,6 +278,7 @@
 
 </main>
 
+<script src="/period-nav.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

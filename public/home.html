@@ -36,6 +36,10 @@
   .hairline-b { border-bottom:1px solid rgba(255,255,255,0.07); }
   ::-webkit-scrollbar { display:none; }
 
+  /* Tailwind's display utilities (.flex etc.) outrank preflight's [hidden] rule,
+     so el.hidden alone would not hide an element that carries one. */
+  [hidden] { display:none !important; }
+
   .seg { display:flex; gap:3px; padding:3px; background:rgba(120,120,128,0.16); border-radius:16px; border:1px solid rgba(255,255,255,0.06); box-shadow: inset 0 1px 0 rgba(255,255,255,.06); }
   .seg button { flex:1; border:0; background:transparent; color:rgba(235,235,245,0.6); font-size:13px; font-weight:600; padding:8px 6px; border-radius:13px; transition:.2s cubic-bezier(.32,.72,0,1); cursor:pointer; }
   .seg button.active { background:linear-gradient(180deg, rgba(255,255,255,.22), rgba(255,255,255,.10)); color:#fff; border:1px solid rgba(255,255,255,.14); box-shadow: inset 0 1px 0 rgba(255,255,255,.45), 0 2px 8px rgba(0,0,0,.40); }
@@ -45,6 +49,8 @@
   .lg-btn:active { transform:scale(.97); filter:brightness(1.08); }
   .lg-btn-soft { background:linear-gradient(180deg, rgba(255,255,255,.18), rgba(255,255,255,.06)); border:1px solid rgba(255,255,255,.14); }
   .lg-btn-blue { background:linear-gradient(180deg, rgba(80,170,255,.34), rgba(10,132,255,.16)); border:1px solid rgba(10,132,255,.5); color:#eaf4ff; }
+  /* Used by the period-nav prev/next buttons; index.html defines this already, home.html didn't. */
+  .lg-btn-ghost { background:linear-gradient(180deg, rgba(255,255,255,.06), rgba(255,255,255,.02)); border:1px solid rgba(255,255,255,.08); color:#9a9aa2; box-shadow:inset 0 1px 0 rgba(255,255,255,.12); }
 
   .sw { width:52px; height:31px; border-radius:999px; background:rgba(120,120,128,0.32); position:relative; transition:background .25s ease; cursor:pointer; flex:0 0 auto; border:1px solid rgba(255,255,255,.08); }
   .sw.on { background:#30D158; }
@@ -149,7 +155,16 @@
         <span class="text-[22px] font-bold tnum" style="color:#FF453A"><span id="import">–</span><span class="text-sm font-normal text-mut ml-0.5">W</span></span>
       </div>
     </div>
-    <div class="text-[11px] font-bold tracking-widest text-mut mt-4 mb-2 px-1">TODAY</div>
+    <div class="seg mt-4 mb-2" id="homeRangeSeg">
+      <button data-range="day" class="active">Day</button>
+      <button data-range="week">Week</button>
+      <button data-range="month">Month</button>
+    </div>
+    <div id="homePeriodNav" class="flex justify-between items-center px-1 mb-2" hidden>
+      <button id="homePeriodPrev" class="lg-btn lg-btn-ghost px-4 py-1.5 text-[15px]">‹</button>
+      <span id="homePeriodLabel" class="text-[13px] font-semibold"></span>
+      <button id="homePeriodNext" class="lg-btn lg-btn-ghost px-4 py-1.5 text-[15px]">›</button>
+    </div>
     <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
       <div class="glass rounded-2xl p-3.5 flex flex-col gap-1">
         <span class="text-mut text-[10px] font-semibold tracking-wider">SOLAR GEN</span>
@@ -264,6 +279,7 @@
   </div>
 </div>
 
+<script src="/period-nav.js"></script>
 <script src="home.js"></script>
 </body>
 </html>

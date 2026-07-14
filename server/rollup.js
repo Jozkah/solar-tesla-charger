@@ -108,6 +108,36 @@ export function walkStartMs(since, until, knownStart) {
   return Math.max(since, knownStart === Infinity ? until : knownStart);
 }
 
+// Local midnight on or before `ts`.
+export function startOfDayMs(ts) {
+  const d = new Date(ts);
+  d.setHours(0, 0, 0, 0);
+  return d.getTime();
+}
+
+// Upper bound on how far back a legitimate daily_stats row can ever predate
+// "now" — generously larger than any real deployment's uptime. daily_stats
+// rows are NEVER pruned (only `samples` is), so a stray pre-history row
+// (restore-from-backup, clock skew before NTP got a lock, a manual insert)
+// has no self-healing mechanism: shouldPersistDay correctly refuses to
+// (re-)persist days before real history, so no cache ever forms to short-
+// circuit the next call — every single `all`/`month` request would re-walk
+// tens of thousands of empty days, forever. Flooring knownStart (below) turns
+// a corrupt/stray row into a one-time miss instead of a permanent per-request
+// tax.
+export const MAX_ROLLUP_HISTORY_MS = 1826 /* ~5 years */ * 86_400_000;
+
+// Floors a raw "earliest known day" (stats.js's knownStartMs, before this
+// clamp) at MAX_ROLLUP_HISTORY_MS before `nowMs`. Pure so the clamp itself —
+// as opposed to knownStartMs's DB reads — can be unit tested without a
+// database. Day-aligned (not just ms-clamped): callers loop `d = start; d <
+// until; d = nextDayMs(d)`, so a non-midnight start would offset every
+// subsequent "day" boundary it walks off of local midnight.
+export function floorKnownStart(rawStart, nowMs) {
+  if (rawStart === Infinity) return Infinity;
+  return Math.max(rawStart, startOfDayMs(nowMs - MAX_ROLLUP_HISTORY_MS));
+}
+
 // Combine day rollups into one range total. Peaks take a max; everything else
 // sums. Ratios (solarPct) and chargingMinutes are derived by the caller from
 // the summed parts — never averaged across days.

@@ -1,6 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { computeDayRollup, foldRollups, nextDayMs, isDayComplete, shouldPersistDay, walkStartMs } from '../server/rollup.js';
+import {
+  computeDayRollup, foldRollups, nextDayMs, isDayComplete, shouldPersistDay, walkStartMs,
+  startOfDayMs, floorKnownStart, MAX_ROLLUP_HISTORY_MS,
+} from '../server/rollup.js';
 
 const DAY = 86_400_000;
 const d0 = new Date(2026, 0, 5).setHours(0, 0, 0, 0); // local midnight
@@ -270,4 +273,35 @@ test('walkStartMs walks zero days when the database is empty (knownStart = Infin
   const since = 0;
   const until = d0 + DAY;
   assert.equal(walkStartMs(since, until, Infinity), until); // loop `d = until; d < until` never runs
+});
+
+// Regression for the "stray pre-history row" finding: a corrupt/stray
+// daily_stats row (restore-from-backup, clock skew before NTP, manual
+// insert) makes knownStartMs report a day far older than any real history.
+// shouldPersistDay refuses to persist those pre-history days, so no cache
+// ever forms — every `all`/`month` request re-walks tens of thousands of
+// empty days, forever. floorKnownStart is the pure clamp that stops it.
+test('floorKnownStart leaves a recent, legitimate start untouched', () => {
+  const now = d0;
+  const legitStart = d0 - 30 * DAY; // well within MAX_ROLLUP_HISTORY_MS
+  assert.equal(floorKnownStart(legitStart, now), legitStart);
+});
+
+test('floorKnownStart clamps a stray pre-history row to the floor, not the stray value', () => {
+  const now = d0;
+  const strayRow = new Date(1970, 0, 1).getTime(); // e.g. a zeroed/garbage day_ts
+  const floor = startOfDayMs(now - MAX_ROLLUP_HISTORY_MS);
+  assert.equal(floorKnownStart(strayRow, now), floor);
+  assert.notEqual(floorKnownStart(strayRow, now), startOfDayMs(strayRow));
+});
+
+test('floorKnownStart passes Infinity through unchanged (empty database)', () => {
+  assert.equal(floorKnownStart(Infinity, d0), Infinity);
+});
+
+test('floorKnownStart returns a day-aligned (local-midnight) floor', () => {
+  const now = d0 + 12 * 3_600_000; // mid-day "now", to prove alignment isn't accidental
+  const strayRow = 0;
+  const floored = floorKnownStart(strayRow, now);
+  assert.equal(new Date(floored).getHours(), 0, 'floor must land on local midnight');
 });

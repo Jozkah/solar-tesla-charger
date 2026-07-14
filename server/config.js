@@ -14,7 +14,14 @@ function readJson(file) {
   return JSON.parse(raw);
 }
 
-const fileConfig = readJson(path.join(ROOT, 'config.json'));
+// CONFIG_PATH lets tests point at a throwaway config.json (server/db.js opens
+// SQLite at import time from config.paths.db, so nothing DB-touching is
+// importable from a test without this). Deliberately NOT a fallback for a
+// missing config.json — if it's absent, readJson must still throw. A car
+// controller silently booting on example values would be far worse than a
+// crash at startup.
+const configPath = process.env.CONFIG_PATH ? path.resolve(process.env.CONFIG_PATH) : path.join(ROOT, 'config.json');
+const fileConfig = readJson(configPath);
 
 export const config = {
   ...fileConfig,

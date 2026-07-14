@@ -283,6 +283,11 @@ function renderCards(s) {
 const TOGGLE_BASE = 'lg-btn w-full py-4 text-[17px] ';
 function renderControls(s) {
   document.querySelectorAll('#modeSeg button').forEach((b) => b.classList.toggle('active', b.dataset.mode === s.mode));
+  // Paused means paused: hide every control that only acts on a live charge.
+  // Relies on the [hidden] !important rule — Tailwind's .flex on these cards
+  // outranks preflight's [hidden] on its own.
+  const paused = s.mode === 'pause';
+  for (const id of ['limitCard', 'chargeToggle', 'boostCard', 'schedCard']) $(id).hidden = paused;
   const btn = $('chargeToggle');
   if (!btn._busy) {
     if (s.charging) { btn.textContent = '■ Stop charge'; btn.className = TOGGLE_BASE + 'lg-btn-red'; btn.dataset.action = 'stop'; }

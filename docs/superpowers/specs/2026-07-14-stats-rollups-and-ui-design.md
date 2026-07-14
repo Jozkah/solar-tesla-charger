@@ -206,3 +206,38 @@ execution.
 - **`main` / `home-dashboard` divergence.** The branches sit ~35 and ~51 commits apart with
   duplicated-but-distinct commits on each side, so every change costs a double-port and a
   semantic-conflict review. Worth addressing separately.
+
+## Addendum (found during implementation)
+
+### `adjustments` seeding: last CHARGING sample, not last sample
+
+The spec said each day's rollup reads "one sample before its midnight" to seed
+`prevAmps`. That is wrong, and it cost real numbers: `getStats('month', 0)`
+reported 1835 adjustments where the pre-rollup whole-range oracle reported 1837.
+
+The whole-range math only ever carries `prevAmps` forward from **charging**
+samples, so it holds the last charging amps from possibly hours earlier. The car
+is usually idle at midnight, so the nearest sample is non-charging and
+`computeDayRollup` — which correctly only adopts a seed inside `if (r.charging)`
+— seeds nothing. The day's first charging sample then stops counting as an
+adjustment. Seeding unconditionally would be wrong too: `charge_amps` persists on
+non-charging rows (one real midnight carried a stale `12` when the true last
+charging value was `9`).
+
+`queries.sampleBefore` therefore filters `charging = 1`.
+
+### `adjustments` is now range-independent (a deliberate, small behavior change)
+
+A day's rollup is immutable and cannot depend on which range is viewing it, so
+its first charging sample is compared against the last charging sample *before
+the day* — even when that falls outside the range being folded. The old
+whole-range code started `prevAmps = null` at the range boundary and did not
+count that first change.
+
+Effect: a range's `adjustments` can read up to 1 higher than the old code, at the
+range's first day. Verified on real data: `week` 1163 vs 1162; `month` matched at
+1837 (its first day had no prior samples).
+
+This is accepted. The old count was range-dependent — the same day contributed a
+different number depending on whether you viewed it as a week or a month. The new
+count is stable per day. It affects only the cosmetic "Adjusts" tile.

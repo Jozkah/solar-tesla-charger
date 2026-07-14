@@ -6,7 +6,7 @@
 
 **Architecture:** A `daily_stats` table stores one pre-aggregated row per completed day. `week`/`month`/`all` fold those rows; only today is computed live from `samples`. The per-day computation and the fold are pure functions over plain arrays, so they are unit-testable without a database. The period nav moves from `public/app.js` into a shared `public/period-nav.js` that both pages load.
 
-**Tech Stack:** Node 18+ ESM, Express, `node:sqlite` (`DatabaseSync`, **synchronous**), `node:test` (built-in, no new dependency), vanilla browser JS + Tailwind CDN, Playwright for browser checks.
+**Tech Stack:** Node 18+ ESM (dev box runs Node 24), Express, `node:sqlite` (`DatabaseSync`, **synchronous**), `node:test` (built-in, no new dependency), vanilla browser JS + Tailwind CDN, Playwright for browser checks.
 
 ## Global Constraints
 
@@ -48,7 +48,7 @@ In the `"scripts"` block, add `test` alongside the existing entries:
   "scripts": {
     "start": "node server/index.js",
     "dev": "node --watch server/index.js",
-    "test": "node --test test/"
+    "test": "node --test"
   },
 ```
 

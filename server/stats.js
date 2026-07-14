@@ -1,7 +1,7 @@
 // Derives the dashboard statistics from the SQLite sample/session history.
 import { queries, currentSession, saveDayRollup } from './db.js';
 import config from './config.js';
-import { computeDayRollup, foldRollups } from './rollup.js';
+import { computeDayRollup, foldRollups, nextDayMs, isDayComplete } from './rollup.js';
 
 function startOfTodayMs() {
   const d = new Date();
@@ -41,9 +41,9 @@ export function periodBounds(range, offset = 0) {
 // A completed day is immutable, so it's computed once and kept forever — this
 // is what makes week/month/all cheap.
 function dayRollup(dayStart) {
-  const dayEnd = dayStart + 86_400_000;
-  const isToday = dayStart >= startOfTodayMs();
-  if (!isToday) {
+  const dayEnd = nextDayMs(dayStart);
+  const complete = isDayComplete(dayStart, Date.now());
+  if (complete) {
     const hit = queries.dayRollup.get(dayStart);
     if (hit) return hit;
   }
@@ -57,14 +57,14 @@ function dayRollup(dayStart) {
   const r = computeDayRollup(rows, dayStart, dayEnd);
   // Never freeze a day that's still running. Empty days are stored too, so a
   // day the server was off isn't recomputed on every future view.
-  if (!isToday) saveDayRollup(r);
+  if (complete) saveDayRollup(r);
   return r;
 }
 
 // Fold every day in [since, until) — the calendar ranges.
 function rollupRange(since, until) {
   const days = [];
-  for (let d = since; d < until; d += 86_400_000) days.push(dayRollup(d));
+  for (let d = since; d < until; d = nextDayMs(d)) days.push(dayRollup(d));
   return foldRollups(days);
 }
 
@@ -85,7 +85,7 @@ function allTimeTotals() {
   const starts = [firstRollup, firstSample == null ? null : startOfDayMs(firstSample)]
     .filter((v) => v != null);
   if (!starts.length) return foldRollups([]); // empty database
-  return rollupRange(Math.min(...starts), startOfTodayMs() + 86_400_000);
+  return rollupRange(Math.min(...starts), nextDayMs(startOfTodayMs()));
 }
 
 export function getStats(range = 'today', offset = 0) {
@@ -106,7 +106,7 @@ export function getStats(range = 'today', offset = 0) {
   let t;
   let sampleCount;
   if (bounds) {
-    t = rollupRange(since, Math.min(until, startOfTodayMs() + 86_400_000));
+    t = rollupRange(since, Math.min(until, nextDayMs(startOfTodayMs())));
     sampleCount = t.samples;
   } else if (range === 'all') {
     // Every day we have any record of. Rollups outlive the sample prune, so

@@ -57,6 +57,22 @@ export function computeDayRollup(rows, dayStart, dayEnd) {
   return out;
 }
 
+// Next local midnight after `dayStart`. Calendar arithmetic, NOT + 86_400_000:
+// a DST fall-back day is 25 hours and a spring-forward day is 23, so a fixed
+// 24h step drifts off midnight and mis-keys every following day.
+export function nextDayMs(dayStart) {
+  const d = new Date(dayStart);
+  d.setDate(d.getDate() + 1);
+  return d.getTime();
+}
+
+// A day is complete once the next local midnight has arrived. Only complete
+// days may be persisted — freezing a partially-elapsed day would store its
+// mid-day totals forever, since rollups are never recomputed.
+export function isDayComplete(dayStart, nowMs) {
+  return nextDayMs(dayStart) <= nowMs;
+}
+
 // Combine day rollups into one range total. Peaks take a max; everything else
 // sums. Ratios (solarPct) and chargingMinutes are derived by the caller from
 // the summed parts — never averaged across days.

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { computeDayRollup, foldRollups } from '../server/rollup.js';
+import { computeDayRollup, foldRollups, nextDayMs, isDayComplete } from '../server/rollup.js';
 
 const DAY = 86_400_000;
 const d0 = new Date(2026, 0, 5).setHours(0, 0, 0, 0); // local midnight
@@ -151,4 +151,46 @@ test('fold of nothing is all zeros', () => {
   assert.equal(t.samples, 0);
   assert.equal(t.car_wh, 0);
   assert.equal(t.peak_w, 0);
+});
+
+// NOTE: these two assertions (getHours() === 0, one-calendar-day advance) hold
+// in every timezone. They only actually exercise the DST-safety property this
+// suite guards against (a fixed +24h drifting off midnight) when run in a
+// DST-observing zone — this deployment runs in Europe/Lisbon, which observes
+// DST, so that's what CI/dev boxes here are expected to use.
+test('nextDayMs lands on next local midnight across the autumn DST fall-back (25h day)', () => {
+  // 2026-10-25 in Europe/Lisbon is the fall-back day: 01:00 happens twice, the
+  // local day is 25 hours long. A fixed +86_400_000 step would land at 23:00
+  // on the 25th, not midnight on the 26th.
+  const start = new Date(2026, 9, 25).setHours(0, 0, 0, 0); // Oct 25 2026 local midnight
+  const next = nextDayMs(start);
+  const d = new Date(next);
+  assert.equal(d.getHours(), 0, 'must land exactly on local midnight');
+  assert.equal(d.getDate(), 26);
+  assert.equal(d.getMonth(), 9);
+});
+
+test('nextDayMs lands on next local midnight across the spring DST spring-forward (23h day)', () => {
+  // 2026-03-29 in Europe/Lisbon is the spring-forward day: 01:00 jumps to
+  // 02:00, the local day is 23 hours long. A fixed +86_400_000 step would
+  // overshoot past midnight on the 30th.
+  const start = new Date(2026, 2, 29).setHours(0, 0, 0, 0); // Mar 29 2026 local midnight
+  const next = nextDayMs(start);
+  const d = new Date(next);
+  assert.equal(d.getHours(), 0, 'must land exactly on local midnight');
+  assert.equal(d.getDate(), 30);
+  assert.equal(d.getMonth(), 2);
+});
+
+test('isDayComplete is false for today and true for yesterday', () => {
+  const now = Date.now();
+  const todayMidnight = new Date(now);
+  todayMidnight.setHours(0, 0, 0, 0);
+  const yesterdayMidnight = new Date(todayMidnight.getTime());
+  yesterdayMidnight.setDate(yesterdayMidnight.getDate() - 1);
+
+  // Today is never persisted: the invariant this whole fix protects.
+  assert.equal(isDayComplete(todayMidnight.getTime(), now), false);
+  // Yesterday's next midnight has already arrived, so it's safe to persist.
+  assert.equal(isDayComplete(yesterdayMidnight.getTime(), now), true);
 });

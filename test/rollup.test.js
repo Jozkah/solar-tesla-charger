@@ -70,6 +70,23 @@ test('seeds prevAmps from the lookbehind sample so midnight does not miscount', 
   assert.equal(r.adjustments, 0);
 });
 
+test('does not seed prevAmps from a non-charging lookbehind, even with stale charge_amps', () => {
+  // charge_amps persists on non-charging rows, so a naive "last sample before
+  // midnight" lookup can hand back a stale value that never actually charged
+  // at. computeDayRollup only adopts prevAmps inside `if (r.charging)`, so a
+  // non-charging lookbehind must seed nothing — the day's first charging
+  // sample then has no prevAmps to compare against and must not count as an
+  // adjustment. This is why queries.sampleBefore (server/db.js) filters
+  // `charging = 1`: passing the plain last-sample-before-midnight here would
+  // silently drop the seed and undercount adjustments.
+  const rows = [
+    sample(d0 - 10_000, { charge_amps: 12, charging: 0 }), // stale, not charging
+    sample(d0, { charge_amps: 7, charging: 1 }), // first charging sample of the day
+  ];
+  const r = computeDayRollup(rows, d0, d0 + DAY);
+  assert.equal(r.adjustments, 0);
+});
+
 test('counts a real amp change after midnight as one adjustment', () => {
   const rows = [
     sample(d0 - 10_000, { charge_amps: 32, charging: 1 }),

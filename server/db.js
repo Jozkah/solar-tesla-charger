@@ -154,7 +154,12 @@ export function saveDayRollup(r) {
 export const queries = {
   samplesSince: db.prepare('SELECT * FROM samples WHERE ts >= ? ORDER BY ts ASC'),
   samplesBetween: db.prepare('SELECT * FROM samples WHERE ts >= ? AND ts < ? ORDER BY ts ASC'),
-  sampleBefore: db.prepare('SELECT * FROM samples WHERE ts < ? ORDER BY ts DESC LIMIT 1'),
+  // Seeds prevAmps for a day's rollup. Must be the last CHARGING sample, not
+  // simply the last sample: charge_amps persists on non-charging rows, and the
+  // whole-range math only ever carries amps forward from charging samples. The
+  // car is usually idle at midnight, so the nearest sample would seed nothing
+  // and the day's first charging sample would stop counting as an adjustment.
+  sampleBefore: db.prepare('SELECT * FROM samples WHERE ts < ? AND charging = 1 ORDER BY ts DESC LIMIT 1'),
   sampleAtOrAfter: db.prepare('SELECT * FROM samples WHERE ts >= ? ORDER BY ts ASC LIMIT 1'),
   sessionsSince: db.prepare('SELECT * FROM sessions WHERE started_at >= ? ORDER BY id DESC'),
   allSessions: db.prepare('SELECT * FROM sessions ORDER BY id DESC'),

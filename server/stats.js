@@ -47,7 +47,7 @@ function dayRollup(dayStart) {
     const hit = queries.dayRollup.get(dayStart);
     if (hit) return hit;
   }
-  const before = queries.sampleBefore.get(dayStart);   // seeds prevAmps
+  const before = queries.sampleBefore.get(dayStart);   // last charging sample; seeds prevAmps
   const after = queries.sampleAtOrAfter.get(dayEnd);   // closes the last interval
   const rows = [
     ...(before ? [before] : []),

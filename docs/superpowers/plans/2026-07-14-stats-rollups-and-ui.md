@@ -24,9 +24,15 @@
 ### Task 1: Pure per-day rollup computation
 
 **Files:**
-- Modify: `server/stats.js` (add exported `computeDayRollup`)
+- Create: `server/rollup.js` (pure math, **no imports**)
 - Create: `test/rollup.test.js`
 - Modify: `package.json` (add `test` script)
+
+**Why a new file rather than adding to `server/stats.js`:** `stats.js` imports
+`config.js` (which reads `config.json`) and `db.js` (which opens SQLite at import
+time). `config.json` is gitignored, so importing `stats.js` from a test crashes in
+any fresh clone, and it would open a database as a side effect of a unit test.
+`server/rollup.js` must import nothing — that is what makes it testable.
 
 **Interfaces:**
 - Consumes: nothing from earlier tasks.
@@ -53,7 +59,7 @@ Create `test/rollup.test.js`:
 ```js
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { computeDayRollup } from '../server/stats.js';
+import { computeDayRollup } from '../server/rollup.js';
 
 const DAY = 86_400_000;
 const d0 = new Date(2026, 0, 5).setHours(0, 0, 0, 0); // local midnight
@@ -160,11 +166,11 @@ test('returns a zero row for a day with no samples', () => {
 - [ ] **Step 3: Run the test to verify it fails**
 
 Run: `npm test`
-Expected: FAIL — `SyntaxError: The requested module '../server/stats.js' does not provide an export named 'computeDayRollup'`
+Expected: FAIL — `Cannot find module ... server/rollup.js`
 
 - [ ] **Step 4: Implement `computeDayRollup`**
 
-In `server/stats.js`, add after the existing `periodBounds` function:
+Create `server/rollup.js`. It imports nothing — that is deliberate, see the note above:
 
 ```js
 // One day's aggregates, computed in a single pass.
@@ -235,7 +241,7 @@ Expected: PASS — 8 tests passing.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add package.json test/rollup.test.js server/stats.js
+git add package.json test/rollup.test.js server/rollup.js
 git commit -m "feat(stats): pure per-day rollup computation"
 ```
 
@@ -244,7 +250,7 @@ git commit -m "feat(stats): pure per-day rollup computation"
 ### Task 2: Fold rollups into a range total
 
 **Files:**
-- Modify: `server/stats.js` (add exported `foldRollups`)
+- Modify: `server/rollup.js` (add exported `foldRollups`)
 - Modify: `test/rollup.test.js`
 
 **Interfaces:**
@@ -256,7 +262,7 @@ git commit -m "feat(stats): pure per-day rollup computation"
 Append to `test/rollup.test.js`:
 
 ```js
-import { foldRollups } from '../server/stats.js';
+import { foldRollups } from '../server/rollup.js';
 
 test('fold sums energies and maxes peaks', () => {
   const a = { day_ts: 1, samples: 2, car_wh: 100, car_solar_wh: 60, car_grid_wh: 40,
@@ -290,7 +296,7 @@ Expected: FAIL — no export named `foldRollups`.
 
 - [ ] **Step 3: Implement `foldRollups`**
 
-In `server/stats.js`, after `computeDayRollup`:
+In `server/rollup.js`, after `computeDayRollup`:
 
 ```js
 // Combine day rollups into one range total. Peaks take a max; everything else
@@ -331,7 +337,7 @@ Expected: PASS — 10 tests passing.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add test/rollup.test.js server/stats.js
+git add test/rollup.test.js server/rollup.js
 git commit -m "feat(stats): fold day rollups into a range total"
 ```
 
@@ -355,7 +361,7 @@ Create `test/equivalence.test.js`:
 ```js
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { computeDayRollup, foldRollups } from '../server/stats.js';
+import { computeDayRollup, foldRollups } from '../server/rollup.js';
 
 const DAY = 86_400_000;
 const START = new Date(2026, 0, 5).setHours(0, 0, 0, 0); // Monday, local
@@ -635,10 +641,13 @@ function allTimeTotals() {
 }
 ```
 
-Add `saveDayRollup` to the existing `db.js` import at the top of `server/stats.js`:
+Update the imports at the top of `server/stats.js` — `saveDayRollup` from `db.js`, and
+the pure math from the new `rollup.js`:
 
 ```js
 import { queries, currentSession, saveDayRollup } from './db.js';
+import config from './config.js';
+import { computeDayRollup, foldRollups } from './rollup.js';
 ```
 
 - [ ] **Step 2: Route the calendar ranges through the rollups**

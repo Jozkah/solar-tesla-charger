@@ -127,6 +127,12 @@ app.post('/api/charge', async (req, res) => {
 
 app.get('/api/health', (req, res) => res.json({ ok: true, ts: Date.now() }));
 
+// Site location for the dashboard's client-side sunrise/sunset markers.
+app.get('/api/config', (req, res) => {
+  const w = config.weather || {};
+  res.json({ lat: w.lat ?? null, lon: w.lon ?? null });
+});
+
 // Charging events for Apple Shortcuts notifications.
 // /api/notify/pending DRAINS the queue (returns undelivered messages and clears them)
 // so a Shortcut automation can poll it and show a notification for each.

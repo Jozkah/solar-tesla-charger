@@ -73,6 +73,7 @@ let bannerDismissed = null; // banner content signature the user tapped away
 let chartData = []; // {ts, exportW, importW, chargeW, solarW}
 let chartHours = 1; // selected chart range in hours
 let WINDOW_MS = 3600_000; // chart window, derived from chartHours
+let geo = null; // { lat, lon } — site location for sunrise/sunset markers
 
 // --- Solar helper -----------------------------------------------------------
 function solarFromMeters(m) {
@@ -456,6 +457,82 @@ async function loadChartHistory() {
 
 const CH = { W: 600, H: 220, pad: 8 };
 let chartScale = null;
+
+// --- Sun position (compact NOAA/SunCalc port) --------------------------------
+// Returns absolute epoch-ms sunrise/sunset for the calendar day containing `date`
+// at the given lat/lon. NaN on polar day/night — callers guard.
+const SUN = (() => {
+  const rad = Math.PI / 180, dayMs = 86400_000, J1970 = 2440588, J2000 = 2451545;
+  const e = rad * 23.4397; // obliquity of the ecliptic
+  const toDays = (d) => d.valueOf() / dayMs - 0.5 + J1970 - J2000;
+  const fromJ = (j) => (j + 0.5 - J1970) * dayMs;
+  const meanAnomaly = (d) => rad * (357.5291 + 0.98560028 * d);
+  const eclipticLng = (M) => M + rad * (1.9148 * Math.sin(M) + 0.02 * Math.sin(2 * M) + 0.0003 * Math.sin(3 * M)) + rad * 102.9372 + Math.PI;
+  const declination = (L) => Math.asin(Math.sin(e) * Math.sin(L));
+  const J0 = 0.0009;
+  const transitJ = (ds, M, L) => J2000 + ds + 0.0053 * Math.sin(M) - 0.0069 * Math.sin(2 * L);
+  return function sunTimes(date, lat, lon) {
+    const lw = rad * -lon, phi = rad * lat, d = toDays(date);
+    const n = Math.round(d - J0 - lw / (2 * Math.PI));
+    const ds = J0 + lw / (2 * Math.PI) + n;
+    const M = meanAnomaly(ds), L = eclipticLng(M), dec = declination(L);
+    const Jnoon = transitJ(ds, M, L);
+    const h0 = -0.833 * rad; // apparent horizon incl. refraction
+    const w = Math.acos((Math.sin(h0) - Math.sin(phi) * Math.sin(dec)) / (Math.cos(phi) * Math.cos(dec)));
+    const Jset = transitJ(J0 + (w + lw) / (2 * Math.PI) + n, M, L);
+    return { sunrise: fromJ(Jnoon - (Jset - Jnoon)), sunset: fromJ(Jset) };
+  };
+})();
+
+const dayMsC = 86400_000;
+
+// Local midnight (00:00 site-local) for the day containing epoch-ms `t`.
+function localMidnight(t) {
+  const d = new Date(t);
+  d.setHours(0, 0, 0, 0);
+  return d.getTime();
+}
+
+// Build the day-separator + night-shading + sunrise/sunset marker layers for the
+// visible window [x0,x1]. Returns { back, front } SVG strings so callers can put
+// shading behind the data lines and markers/labels on top.
+function daynightLayers(x0, x1, sx) {
+  const { W, H, pad } = CH;
+  const clipX = (t) => Math.max(pad, Math.min(W - pad, sx(t)));
+  let back = '', front = '';
+  const span = x1 - x0;
+  const showSun = geo && Number.isFinite(geo.lat) && Number.isFinite(geo.lon) && span <= 8 * dayMsC;
+  // Walk each local calendar day that overlaps the window.
+  for (let day = localMidnight(x0); day <= x1; day += dayMsC) {
+    const dayEnd = day + dayMsC;
+    // Day separator: faint vertical line + date label at each local midnight in view.
+    if (day > x0 && day < x1) {
+      const x = sx(day).toFixed(1);
+      back += `<line x1="${x}" y1="${pad}" x2="${x}" y2="${H - pad}" stroke="#8499bd" stroke-width="1" stroke-dasharray="2 3" opacity="0.35"/>`;
+      front += `<text x="${(sx(day) + 3).toFixed(1)}" y="${H - pad - 3}" fill="#8499bd" font-size="9" opacity="0.7">${new Date(day).toLocaleDateString(undefined, { day: 'numeric', month: 'short' })}</text>`;
+    }
+    if (!showSun) continue;
+    const { sunrise, sunset } = SUN(new Date(day + dayMsC / 2), geo.lat, geo.lon);
+    // Night shading: dark bands from day-start→sunrise and sunset→day-end (clipped).
+    const band = (a, b) => {
+      const xa = clipX(a), xb = clipX(b);
+      if (xb - xa < 0.5) return '';
+      return `<rect x="${xa.toFixed(1)}" y="${pad}" width="${(xb - xa).toFixed(1)}" height="${H - 2 * pad}" fill="#0a1220" opacity="0.28"/>`;
+    };
+    if (Number.isFinite(sunrise)) back += band(Math.max(x0, day), Math.min(x1, sunrise));
+    if (Number.isFinite(sunset)) back += band(Math.max(x0, sunset), Math.min(x1, dayEnd));
+    // Sunrise / sunset marker lines + glyphs (only when they fall inside the window).
+    const mark = (t, glyph) => {
+      if (!Number.isFinite(t) || t < x0 || t > x1) return;
+      const x = sx(t);
+      front += `<line x1="${x.toFixed(1)}" y1="${pad}" x2="${x.toFixed(1)}" y2="${H - pad}" stroke="#fbbf24" stroke-width="1" opacity="0.5"/>`
+        + `<text x="${x.toFixed(1)}" y="${pad + 11}" fill="#fbbf24" font-size="11" text-anchor="middle" opacity="0.95">${glyph}</text>`;
+    };
+    mark(sunrise, '🌅');
+    mark(sunset, '🌇');
+  }
+  return { back, front };
+}
 function drawChart() {
   const svg = $('chart');
   if (chartData.length < 2) { svg.innerHTML = '<text x="10" y="20" fill="#8499bd" font-size="12">collecting data…</text>'; return; }
@@ -477,11 +554,14 @@ function drawChart() {
   // gridlines (25/50/75%)
   let grid = '';
   for (const f of [0.25, 0.5, 0.75]) { const y = sy(max * f); grid += `<line x1="${pad}" y1="${y}" x2="${W - pad}" y2="${y}" stroke="#1f2c47" stroke-width="1"/>`; }
-  svg.innerHTML = grid
+  // Night shading + day separators (behind data) and sunrise/sunset markers (on top).
+  const dn = daynightLayers(x0, x1, sx);
+  svg.innerHTML = dn.back + grid
     + area('solarW', '#fbbf24') + line('solarW', '#fbbf24')
     + area('exportW', '#34d399') + line('exportW', '#34d399')
     + area('importW', '#FF453A') + line('importW', '#FF453A')
     + line('chargeW', '#60a5fa')
+    + dn.front
     + `<text x="${pad}" y="14" fill="#8499bd" font-size="11">${Math.round(max)} W</text>`;
 }
 
@@ -619,6 +699,11 @@ $('ic-solar').innerHTML = icon('sun', 20);
 $('ic-charge').innerHTML = icon('bolt', 20);
 $('ic-target').innerHTML = icon('target', 20);
 $('ic-volt').innerHTML = icon('gauge', 20);
+
+// Load site location once, then (re)draw so sun markers appear.
+fetch('/api/config').then((r) => r.json()).then((c) => {
+  if (Number.isFinite(c?.lat) && Number.isFinite(c?.lon)) { geo = c; drawChart(); }
+}).catch(() => {});
 
 loadChartHistory();
 refreshStats();

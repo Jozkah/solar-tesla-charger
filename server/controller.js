@@ -25,6 +25,7 @@ import * as kasa from './kasa.js';
 import * as cameras from './cameras.js';
 import * as db from './db.js';
 import * as stats from './stats.js';
+import { resolveWcReading } from './wc-resolve.js';
 
 const C = config.control;
 
@@ -240,6 +241,16 @@ let lastAmpCmdAt = 0; // throttle set_charging_amps to conserve Fleet API comman
 let wcStoppedSince = 0; // first tick the WC reported no current (0 = current flowing)
 const WC_VETO_MS = 15_000;
 
+// The WC is usually reachable but blips (slow/dropped poll). Carrying the last
+// successful reading through a short grace window keeps one bad poll from
+// flipping the whole decision onto laggy car telemetry. 15s covers a blip or
+// two at the ~2s live-poll cadence while bounding staleness: a carried reading
+// can be up to 15s old, but it self-corrects on the very next success — far
+// better than one blip triggering the car-telemetry fallback.
+let lastGoodWc = null;
+let lastGoodWcAt = 0;
+const WC_GRACE_MS = 15_000;
+
 // --- Battery capacity auto-estimate ------------------------------------------
 // Learned from real charges: capacity ≈ charge_energy_added / SoC gained (the
 // same math TeslaMate uses). Segments with ≥10% SoC gain are kept (last 10),
@@ -449,12 +460,25 @@ function setComputed(meters, d) {
 
 // --- Live loop (fast, dashboard) -------------------------------------------
 
+// setInterval(live, ~2s) has no natural back-pressure: if a tick runs long
+// (e.g. a hung WC even at the capped ~1xtimeout), the next tick fires anyway
+// and cycles pile up concurrently, each racing to write state.meters/state.wc.
+// This guard makes a slow tick skip the next one instead of overlapping it.
+let liveBusy = false;
+
 async function liveCycle() {
+  if (liveBusy) return;
+  liveBusy = true;
   const now = Date.now();
   try {
-    const [meters, wc] = await Promise.all([shelly.readMeters(), wallconnector.readVitals()]);
+    const [meters, wcRead] = await Promise.all([shelly.readMeters(), wallconnector.readVitals()]);
     state.meters = meters;
+    const { wc, good } = resolveWcReading({ read: wcRead, lastGood: lastGoodWc, lastGoodAt: lastGoodWcAt, nowMs: now, graceMs: WC_GRACE_MS });
     state.wc = wc;
+    // Math.max guards against a stale write if ticks ever resolve out of
+    // order (the liveBusy guard above already prevents overlap, but this
+    // keeps lastGoodWcAt monotonic even so — belt and suspenders).
+    if (good) { lastGoodWc = wcRead; lastGoodWcAt = Math.max(lastGoodWcAt, now); }
     state.solax = solax.getCached(); // cached; refreshes itself at most once per pollSec
     const loc = state.car?.location;
     state.weather = weather.getCached(loc?.lat, loc?.lon); // cached; refreshes ~every pollMin
@@ -470,6 +494,8 @@ async function liveCycle() {
   } catch (err) {
     state.lastError = `shelly: ${err.message}`;
     emit();
+  } finally {
+    liveBusy = false;
   }
 }
 

@@ -108,6 +108,23 @@ export const config = {
       password: process.env.TAPO_PASSWORD || fileConfig.kasa?.tapo?.password || '',
     },
   },
+  // Charger page "Efficiency & fuel" section: EV km-per-charge vs petrol cost.
+  // All tunable via .env without touching config.json.
+  fuel: {
+    ...(fileConfig.fuel || {}),
+    // 'national' (average all 18 DGEG districts) or a numeric district id.
+    scope: process.env.FUEL_DISTRICT_SCOPE || fileConfig.fuel?.scope || 'national',
+    // DGEG fuel label to average. "Gasolina especial 98" == 98+ (premium).
+    type: process.env.FUEL_TYPE || fileConfig.fuel?.type || 'Gasolina especial 98',
+    // Used when the DGEG fetch fails (€/L).
+    fallbackEurL: Number(process.env.FUEL_FALLBACK_EUR_L || fileConfig.fuel?.fallbackEurL || 2.194),
+    // Comparison ICE consumption (litres / 100 km).
+    iceLPer100: Number(process.env.ICE_L_PER_100KM || fileConfig.fuel?.iceLPer100 || 10),
+    // Used when TeslaMate has no usable drives (Wh/km).
+    fallbackWhPerKm: Number(process.env.FALLBACK_WH_PER_KM || fileConfig.fuel?.fallbackWhPerKm || 200),
+    // How far back to sample drives for the lifetime avg Wh/km.
+    avgWindowDays: Number(process.env.FUEL_AVG_WINDOW_DAYS || fileConfig.fuel?.avgWindowDays || 180),
+  },
 };
 
 // Ensure the data directory exists for SQLite.

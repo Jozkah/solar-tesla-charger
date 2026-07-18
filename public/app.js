@@ -515,12 +515,25 @@ box.addEventListener('touchmove', (e) => onHover(e.touches[0].clientX), { passiv
 box.addEventListener('touchend', hideHover);
 
 // --- Stats ------------------------------------------------------------------
-const statsNav = createPeriodNav({
-  navEl: $('periodNav'), labelEl: $('periodLabel'),
-  prevEl: $('periodPrev'), nextEl: $('periodNext'), segEl: $('rangeSeg'),
-  onData: renderStats,
-});
-const refreshStats = () => statsNav.refresh();
+// period-nav.js is a separate <script> that may fail to load (stale iOS
+// home-screen cache, blocked request, etc). Guard the call so a missing/
+// throwing createPeriodNav can never halt this script — the charging
+// controls wired below must always initialize.
+let statsNav = null;
+try {
+  if (typeof createPeriodNav === 'function') {
+    statsNav = createPeriodNav({
+      navEl: $('periodNav'), labelEl: $('periodLabel'),
+      prevEl: $('periodPrev'), nextEl: $('periodNext'), segEl: $('rangeSeg'),
+      onData: renderStats,
+    });
+  } else {
+    console.error('period-nav.js did not load — stats navigation disabled');
+  }
+} catch (e) {
+  console.error('period nav init failed', e);
+}
+const refreshStats = () => { if (statsNav) statsNav.refresh(); };
 
 // Car-focused tiles only — the whole-home totals live on the home dashboard.
 function renderStats(st) {

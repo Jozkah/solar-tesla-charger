@@ -297,7 +297,16 @@ app.post('/api/kasa/:key', async (req, res) => {
 app.get(['/', '/home'], (req, res) => res.sendFile(path.join(config.paths.public, 'home.html')));
 app.get('/charger', (req, res) => res.sendFile(path.join(config.paths.public, 'index.html')));
 
-app.use(express.static(config.paths.public, { index: false }));
+app.use(express.static(config.paths.public, {
+  index: false,
+  setHeaders: (res, filePath) => {
+    // The dashboard is installed to the iOS home screen (apple-mobile-web-app-
+    // capable) and cached in a standalone webview. Force revalidation of the
+    // HTML and its scripts so a deploy can't leave a stale index.html paired
+    // with a new app.js (or vice versa) — a mismatch throws and blanks the page.
+    if (/\.(html|js)$/i.test(filePath)) res.setHeader('Cache-Control', 'no-cache');
+  },
+}));
 
 // --- Boot ------------------------------------------------------------------
 

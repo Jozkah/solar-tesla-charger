@@ -1,43 +1,22 @@
 // Derives the dashboard statistics from the SQLite sample/session history.
-import { queries, currentSession, saveDayRollup } from './db.js';
+import { queries, currentSession, saveDayRollup, readDayRollup } from './db.js';
 import config from './config.js';
 import {
   computeDayRollup, foldRollups, nextDayMs, isDayComplete, shouldPersistDay, walkStartMs,
   startOfDayMs, floorKnownStart,
 } from './rollup.js';
+import { getBillingDay, getTariff } from './settings.js';
+import { hourBandMap, foldHoursToBands, computeCost, computeChargeCost } from './cost.js';
+
+// periodBounds now lives in period.js (pure, billing-aware). Re-exported so the
+// previous public API (used by tests / callers) is preserved.
+export { periodBounds } from './period.js';
+import { periodBounds } from './period.js';
 
 function startOfTodayMs() {
   const d = new Date();
   d.setHours(0, 0, 0, 0);
   return d.getTime();
-}
-
-// [since, until) bounds for a calendar period, `offset` periods back from the
-// current one (offset 0 = today / this week / this month). Weeks start Monday.
-export function periodBounds(range, offset = 0) {
-  const d = new Date();
-  d.setHours(0, 0, 0, 0);
-  if (range === 'day') {
-    d.setDate(d.getDate() - offset);
-    const since = d.getTime();
-    d.setDate(d.getDate() + 1);
-    return { since, until: d.getTime() };
-  }
-  if (range === 'week') {
-    const dow = (d.getDay() + 6) % 7; // Monday = 0
-    d.setDate(d.getDate() - dow - offset * 7);
-    const since = d.getTime();
-    d.setDate(d.getDate() + 7);
-    return { since, until: d.getTime() };
-  }
-  if (range === 'month') {
-    d.setDate(1);
-    d.setMonth(d.getMonth() - offset);
-    const since = d.getTime();
-    d.setMonth(d.getMonth() + 1);
-    return { since, until: d.getTime() };
-  }
-  return null;
 }
 
 // The calendar day of the earliest SURVIVING sample, or Infinity if the
@@ -89,7 +68,7 @@ function dayRollup(dayStart, historyStart, retentionStart) {
   // `persist` (as before) made such days silently recompute to zero once their
   // samples were gone — this is the fix for that.
   if (isDayComplete(dayStart, now)) {
-    const hit = queries.dayRollup.get(dayStart);
+    const hit = readDayRollup(dayStart);
     if (hit) return hit;
   }
   const persist = shouldPersistDay(dayStart, now, historyStart, retentionStart);
@@ -167,7 +146,7 @@ export function getStats(range = 'today', offset = 0) {
   const now = Date.now();
   let since;
   let until = null; // null = open-ended (up to now)
-  const bounds = periodBounds(range, offset);
+  const bounds = periodBounds(range, offset, getBillingDay(), now);
   if (bounds) ({ since, until } = bounds);
   else if (range === 'all') since = 0;
   else if (range === 'session') {
@@ -194,6 +173,27 @@ export function getStats(range = 'today', offset = 0) {
     const rows = queries.samplesSince.all(since);
     t = computeDayRollup(rows, since, now + 1);
     sampleCount = rows.length;
+  }
+
+  // Estimated grid-import cost + marginal car-charging cost, derived from the
+  // folded per-hour histograms. Bands are applied HERE (read time), so editing
+  // tariff windows re-buckets stored history without any re-integration.
+  let cost = null;
+  let chargeCost = null;
+  const importByHour = t.import_wh_by_hour; // 24-length Wh array (zeros for legacy rows)
+  if (importByHour) {
+    const tariff = getTariff();
+    const map = hourBandMap(tariff.bands);
+    const bandKwh = foldHoursToBands(importByHour, map, tariff.bands.length);
+    // Daily fixed charge must reflect real elapsed days of data, never epoch:
+    // open-ended ranges (all/session/today) measure from the earliest day we
+    // know anything about, not since=0.
+    const windowEnd = until != null ? Math.min(now, until) : now;
+    const windowStart = until != null ? since : Math.max(since, knownStartMs());
+    const elapsedDays = Math.max(0, (windowEnd - windowStart) / 86_400_000);
+    cost = computeCost({ bandKwh, tariff, elapsedDays });
+    const carGridKwh = foldHoursToBands(t.car_grid_wh_by_hour || new Array(24).fill(0), map, tariff.bands.length);
+    chargeCost = computeChargeCost({ carGridKwhByBand: carGridKwh, tariff });
   }
 
   const carWh = t.car_wh;
@@ -224,6 +224,8 @@ export function getStats(range = 'today', offset = 0) {
     since,
     until,
     now,
+    cost,
+    chargeCost,
     samples: sampleCount,
     car: {
       energyWh: round0(carWh),

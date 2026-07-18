@@ -6,6 +6,7 @@ import { request } from 'undici';
 import config from './config.js';
 import * as controller from './controller.js';
 import * as stats from './stats.js';
+import * as settings from './settings.js';
 import * as teslaAuth from './teslaAuth.js';
 import * as notify from './notify.js';
 import * as cameras from './cameras.js';
@@ -48,10 +49,10 @@ app.get('/api/stream', (req, res) => {
 // 1943), which is old enough to precede any real history and poison the DB —
 // see the historyStart guard in stats.js/rollup.js. Ranges without an offset
 // (today/session/all) just clamp to 0.
-const RANGE_MAX_OFFSET = { day: 3650, week: 520, month: 120 };
+const RANGE_MAX_OFFSET = { day: 3650, week: 520, month: 120, billing: 120 };
 
 app.get('/api/stats', (req, res) => {
-  const range = ['today', 'session', 'all', 'day', 'week', 'month'].includes(req.query.range)
+  const range = ['today', 'session', 'all', 'day', 'week', 'month', 'billing'].includes(req.query.range)
     ? req.query.range
     : 'today';
   // Periods back from the current one (day/week/month ranges only).
@@ -63,6 +64,19 @@ app.get('/api/stats', (req, res) => {
 app.get('/api/series', (req, res) => {
   const hours = Math.min(720, Math.max(1, Number(req.query.hours) || 1));
   res.json(stats.getSeries(hours));
+});
+
+// Billing day + time-of-use tariff, persisted in the SQLite settings KV store.
+app.get('/api/settings', (req, res) => {
+  res.json({ billingDay: settings.getBillingDay(), tariff: settings.getTariff() });
+});
+
+app.post('/api/settings', (req, res) => {
+  try {
+    res.json(settings.applySettings(req.body || {}));
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
 });
 
 app.post('/api/mode', (req, res) => {

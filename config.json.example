@@ -91,5 +91,8 @@
   "db": {
     "path": "data/energy.db",
     "sampleRetentionDays": 60
+  },
+  "stats": {
+    "billingDay": 1
   }
 }

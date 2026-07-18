@@ -25,6 +25,7 @@ import * as kasa from './kasa.js';
 import * as cameras from './cameras.js';
 import * as db from './db.js';
 import * as stats from './stats.js';
+import { resolveWcReading } from './wc-resolve.js';
 
 const C = config.control;
 
@@ -240,6 +241,16 @@ let lastAmpCmdAt = 0; // throttle set_charging_amps to conserve Fleet API comman
 let wcStoppedSince = 0; // first tick the WC reported no current (0 = current flowing)
 const WC_VETO_MS = 15_000;
 
+// The WC is usually reachable but blips (slow/dropped poll). Carrying the last
+// successful reading through a short grace window keeps one bad poll from
+// flipping the whole decision onto laggy car telemetry. 15s covers a blip or
+// two at the ~2s live-poll cadence while bounding staleness: a carried reading
+// can be up to 15s old, but it self-corrects on the very next success — far
+// better than one blip triggering the car-telemetry fallback.
+let lastGoodWc = null;
+let lastGoodWcAt = 0;
+const WC_GRACE_MS = 15_000;
+
 // --- Battery capacity auto-estimate ------------------------------------------
 // Learned from real charges: capacity ≈ charge_energy_added / SoC gained (the
 // same math TeslaMate uses). Segments with ≥10% SoC gain are kept (last 10),
@@ -452,9 +463,11 @@ function setComputed(meters, d) {
 async function liveCycle() {
   const now = Date.now();
   try {
-    const [meters, wc] = await Promise.all([shelly.readMeters(), wallconnector.readVitals()]);
+    const [meters, wcRead] = await Promise.all([shelly.readMeters(), wallconnector.readVitals()]);
     state.meters = meters;
+    const { wc, good } = resolveWcReading({ read: wcRead, lastGood: lastGoodWc, lastGoodAt: lastGoodWcAt, nowMs: now, graceMs: WC_GRACE_MS });
     state.wc = wc;
+    if (good) { lastGoodWc = wcRead; lastGoodWcAt = now; }
     state.solax = solax.getCached(); // cached; refreshes itself at most once per pollSec
     const loc = state.car?.location;
     state.weather = weather.getCached(loc?.lat, loc?.lon); // cached; refreshes ~every pollMin

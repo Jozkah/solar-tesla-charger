@@ -477,12 +477,25 @@ document.addEventListener('keydown', (e) => { if (e.key === 'Escape') { closeVie
 // Range/offset state, fetching and the label live in period-nav.js (shared with
 // /charger); this page only renders the four tiles from the response.
 const fmtKwh = (wh) => (wh == null ? '–' : (wh / 1000).toFixed(2));
-const statsNav = createPeriodNav({
-  navEl: $('homePeriodNav'), labelEl: $('homePeriodLabel'),
-  prevEl: $('homePeriodPrev'), nextEl: $('homePeriodNext'), segEl: $('homeRangeSeg'),
-  onData: renderStats,
-});
-function loadStats() { statsNav.refresh(); }
+// period-nav.js is a separate <script> that may fail to load (stale iOS
+// home-screen cache, blocked request, etc). Guard the call so a missing/
+// throwing createPeriodNav can never halt this script — the rest of the
+// page (cameras, weather, chart, live connection) must always initialize.
+let statsNav = null;
+try {
+  if (typeof createPeriodNav === 'function') {
+    statsNav = createPeriodNav({
+      navEl: $('homePeriodNav'), labelEl: $('homePeriodLabel'),
+      prevEl: $('homePeriodPrev'), nextEl: $('homePeriodNext'), segEl: $('homeRangeSeg'),
+      onData: renderStats,
+    });
+  } else {
+    console.error('period-nav.js did not load — stats navigation disabled');
+  }
+} catch (e) {
+  console.error('period nav init failed', e);
+}
+function loadStats() { if (statsNav) statsNav.refresh(); }
 
 function renderStats(st) {
   const h = st.home || {};

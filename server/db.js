@@ -56,11 +56,22 @@ db.exec(`
     used_wh          REAL
   );
 
+  CREATE TABLE IF NOT EXISTS settings (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+  );
+
   CREATE INDEX IF NOT EXISTS idx_samples_ts ON samples(ts);
 `);
 
 // Add columns introduced after the initial schema (no-op if they already exist).
 try { db.exec('ALTER TABLE samples ADD COLUMN solax_w REAL'); } catch { /* already exists */ }
+// Per-hour grid-import + car-grid Wh histograms (JSON arrays, length 24). Stored
+// on the immutable rollup so time-of-use cost survives the sample prune AND
+// stays correct if the user later edits tariff band windows — bands are applied
+// at READ time over these stored hours, never baked into the rollup.
+try { db.exec('ALTER TABLE daily_stats ADD COLUMN import_wh_by_hour TEXT'); } catch { /* already exists */ }
+try { db.exec('ALTER TABLE daily_stats ADD COLUMN car_grid_wh_by_hour TEXT'); } catch { /* already exists */ }
 
 const insertSample = db.prepare(`
   INSERT OR REPLACE INTO samples
@@ -131,15 +142,32 @@ export function updateSession(s) {
 const saveDayRollupStmt = db.prepare(`
   INSERT INTO daily_stats
     (day_ts, samples, car_wh, car_solar_wh, car_grid_wh, peak_w, peak_amps,
-     charging_samples, adjustments, solar2_wh, solax_wh, export_wh, import_wh, used_wh)
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     charging_samples, adjustments, solar2_wh, solax_wh, export_wh, import_wh, used_wh,
+     import_wh_by_hour, car_grid_wh_by_hour)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   ON CONFLICT(day_ts) DO UPDATE SET
     samples=excluded.samples, car_wh=excluded.car_wh, car_solar_wh=excluded.car_solar_wh,
     car_grid_wh=excluded.car_grid_wh, peak_w=excluded.peak_w, peak_amps=excluded.peak_amps,
     charging_samples=excluded.charging_samples, adjustments=excluded.adjustments,
     solar2_wh=excluded.solar2_wh, solax_wh=excluded.solax_wh, export_wh=excluded.export_wh,
-    import_wh=excluded.import_wh, used_wh=excluded.used_wh
+    import_wh=excluded.import_wh, used_wh=excluded.used_wh,
+    import_wh_by_hour=excluded.import_wh_by_hour, car_grid_wh_by_hour=excluded.car_grid_wh_by_hour
 `);
+
+const ZERO_HOURS = () => new Array(24).fill(0);
+
+// Parse a stored per-hour JSON histogram back to a length-24 number array.
+// Any legacy null / corrupt / wrong-length value degrades to zeros so folding
+// and cost math never see undefined.
+function parseHourArr(raw) {
+  if (raw == null) return ZERO_HOURS();
+  try {
+    const a = JSON.parse(raw);
+    return Array.isArray(a) && a.length === 24 ? a : ZERO_HOURS();
+  } catch {
+    return ZERO_HOURS();
+  }
+}
 
 // Persist one completed day's rollup. Callers must never pass today — a
 // partially-elapsed day would be frozen at its mid-day value.
@@ -147,7 +175,38 @@ export function saveDayRollup(r) {
   saveDayRollupStmt.run(
     r.day_ts, r.samples, r.car_wh, r.car_solar_wh, r.car_grid_wh, r.peak_w, r.peak_amps,
     r.charging_samples, r.adjustments, r.solar2_wh, r.solax_wh, r.export_wh, r.import_wh, r.used_wh,
+    JSON.stringify(r.import_wh_by_hour || ZERO_HOURS()),
+    JSON.stringify(r.car_grid_wh_by_hour || ZERO_HOURS()),
   );
+}
+
+// Read a stored rollup with its per-hour histograms parsed to arrays, so a
+// stored day folds identically to a freshly computed one. Returns undefined
+// when the day has no stored row.
+export function readDayRollup(dayStart) {
+  const row = queries.dayRollup.get(dayStart);
+  if (!row) return undefined;
+  return {
+    ...row,
+    import_wh_by_hour: parseHourArr(row.import_wh_by_hour),
+    car_grid_wh_by_hour: parseHourArr(row.car_grid_wh_by_hour),
+  };
+}
+
+// --- Key/value settings store (billing day, tariff) ------------------------
+
+const getSettingStmt = db.prepare('SELECT value FROM settings WHERE key = ?');
+const setSettingStmt = db.prepare(
+  'INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value'
+);
+
+export function getSetting(key) {
+  const row = getSettingStmt.get(key);
+  return row ? row.value : undefined;
+}
+
+export function setSetting(key, value) {
+  setSettingStmt.run(key, value);
 }
 
 // --- Queries used by stats.js ----------------------------------------------

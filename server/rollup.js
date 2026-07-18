@@ -16,6 +16,11 @@ export function computeDayRollup(rows, dayStart, dayEnd) {
     peak_w: 0, peak_amps: 0,
     charging_samples: 0, adjustments: 0,
     solar2_wh: 0, solax_wh: 0, export_wh: 0, import_wh: 0, used_wh: 0,
+    // Per-local-hour Wh histograms (length 24) so time-of-use cost can bucket
+    // by band at read time. Attributed to the interval midpoint's local hour,
+    // matching the same left-sample/gap-skip valuation as the scalar totals.
+    import_wh_by_hour: new Array(24).fill(0),
+    car_grid_wh_by_hour: new Array(24).fill(0),
   };
   let prevAmps = null;
   for (let i = 0; i < rows.length; i++) {
@@ -36,8 +41,12 @@ export function computeDayRollup(rows, dayStart, dayEnd) {
 
     const next = rows[i + 1];
     if (!next) continue;
-    const dtH = (next.ts - r.ts) / 3_600_000;
+    const dtMs = next.ts - r.ts;
+    const dtH = dtMs / 3_600_000;
     if (dtH <= 0 || dtH > 0.5) continue; // skip gaps
+
+    const midHour = new Date(r.ts + dtMs / 2).getHours();
+    out.import_wh_by_hour[midHour] += Math.max(0, r.import_w || 0) * dtH;
 
     const cw = Math.max(0, r.charge_w || 0);
     out.car_wh += cw * dtH;
@@ -45,6 +54,7 @@ export function computeDayRollup(rows, dayStart, dayEnd) {
       const gridShare = (r.import_w || 0) > 0 ? Math.min(r.import_w, cw) : 0;
       out.car_grid_wh += gridShare * dtH;
       out.car_solar_wh += (cw - gridShare) * dtH;
+      out.car_grid_wh_by_hour[midHour] += gridShare * dtH;
     }
     const growatt = -Math.min(0, r.solar2_w || 0); // generation reads negative
     const solax = Math.max(0, r.solax_w || 0);
@@ -148,6 +158,8 @@ export function foldRollups(days) {
     peak_w: 0, peak_amps: 0,
     charging_samples: 0, adjustments: 0,
     solar2_wh: 0, solax_wh: 0, export_wh: 0, import_wh: 0, used_wh: 0,
+    import_wh_by_hour: new Array(24).fill(0),
+    car_grid_wh_by_hour: new Array(24).fill(0),
   };
   for (const d of days) {
     out.samples += d.samples;
@@ -163,6 +175,13 @@ export function foldRollups(days) {
     out.used_wh += d.used_wh;
     out.peak_w = Math.max(out.peak_w, d.peak_w || 0);
     out.peak_amps = Math.max(out.peak_amps, d.peak_amps || 0);
+    // Element-wise sum the per-hour histograms; tolerate legacy/missing arrays.
+    const imp = d.import_wh_by_hour;
+    const cg = d.car_grid_wh_by_hour;
+    for (let h = 0; h < 24; h++) {
+      out.import_wh_by_hour[h] += (imp && imp[h]) || 0;
+      out.car_grid_wh_by_hour[h] += (cg && cg[h]) || 0;
+    }
   }
   return out;
 }

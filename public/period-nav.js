@@ -1,11 +1,11 @@
 // Shared period navigation for the stats blocks on /charger and /.
 // Owns range + offset state, fetching, and the label; callers just render.
 (function () {
-  const PERIOD_RANGES = ['day', 'week', 'month'];
+  const PERIOD_RANGES = ['day', 'week', 'month', 'billing'];
   // Matches the server's per-range clamp (server/index.js RANGE_MAX_OFFSET) —
   // past it the response echoes a different offset than requested, and the
   // stale-response guard below would then silently drop every update.
-  const RANGE_MAX_OFFSET = { day: 3650, week: 520, month: 120 };
+  const RANGE_MAX_OFFSET = { day: 3650, week: 520, month: 120, billing: 120 };
 
   function periodLabel(st) {
     if (!PERIOD_RANGES.includes(st.range)) return '';
@@ -21,6 +21,17 @@
       // spring-forward week would land at 23:00 the previous day and the
       // label would read one day short (e.g. "23 – 28 Mar" for a week ending
       // the 29th).
+      const end = new Date(st.until);
+      end.setDate(end.getDate() - 1);
+      const s = since.toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
+      const e = end.toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
+      return `${s} – ${e}`;
+    }
+    if (st.range === 'billing') {
+      if (st.offset === 0) return 'This billing period';
+      // Billing cycles are variable-length; label the actual [since, until)
+      // span. `until` is exclusive, so the last included day is until - 1 day
+      // (calendar step, DST-safe like the week label above).
       const end = new Date(st.until);
       end.setDate(end.getDate() - 1);
       const s = since.toLocaleDateString(undefined, { day: 'numeric', month: 'short' });

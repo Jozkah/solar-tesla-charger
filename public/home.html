@@ -129,6 +129,33 @@
 
 <main class="px-5 pt-5 flex flex-col gap-6 max-w-[720px] mx-auto">
 
+  <!-- Settings (tariff & billing) -->
+  <div class="flex justify-end -mb-2">
+    <button id="settingsToggle" class="lg-btn lg-btn-ghost px-3 py-1 text-[12px]">⚙ Tariff &amp; billing</button>
+  </div>
+  <div id="settingsPanel" class="glass rounded-2xl p-3.5 flex flex-col gap-3" hidden>
+    <div class="grid grid-cols-2 gap-3">
+      <label class="flex flex-col gap-1"><span class="text-[10px] text-mut uppercase">Billing day</span>
+        <input id="setBillingDay" type="number" min="1" max="31" class="px-2 py-1.5 rounded-xl text-[14px] tnum" style="background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.12);color:#f2f2f7" /></label>
+      <label class="flex flex-col gap-1"><span class="text-[10px] text-mut uppercase">Currency</span>
+        <input id="setCurrency" type="text" maxlength="8" class="px-2 py-1.5 rounded-xl text-[14px]" style="background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.12);color:#f2f2f7" /></label>
+    </div>
+    <div class="text-[10px] text-mut uppercase">Bands — rate (per kWh) &amp; hours (e.g. 0-8,22-24)</div>
+    <div id="tariffBands" class="flex flex-col gap-2"></div>
+    <div class="grid grid-cols-2 gap-3">
+      <label class="flex flex-col gap-1"><span class="text-[10px] text-mut uppercase">Daily fixed</span>
+        <input id="setDailyFixed" type="number" step="0.0001" class="px-2 py-1.5 rounded-xl text-[14px] tnum" style="background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.12);color:#f2f2f7" /></label>
+      <label class="flex flex-col gap-1"><span class="text-[10px] text-mut uppercase">Per-kWh levy</span>
+        <input id="setLevy" type="number" step="0.0001" class="px-2 py-1.5 rounded-xl text-[14px] tnum" style="background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.12);color:#f2f2f7" /></label>
+      <label class="flex flex-col gap-1"><span class="text-[10px] text-mut uppercase">Fixed monthly</span>
+        <input id="setFixedMonthly" type="number" step="0.01" class="px-2 py-1.5 rounded-xl text-[14px] tnum" style="background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.12);color:#f2f2f7" /></label>
+      <label class="flex flex-col gap-1"><span class="text-[10px] text-mut uppercase">VAT %</span>
+        <input id="setVat" type="number" step="0.1" min="0" max="100" class="px-2 py-1.5 rounded-xl text-[14px] tnum" style="background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.12);color:#f2f2f7" /></label>
+    </div>
+    <div id="settingsError" class="text-[11px]" style="color:#FF453A" hidden></div>
+    <button id="settingsSave" class="lg-btn px-4 py-2 text-[13px] self-start">Save</button>
+  </div>
+
   <!-- Energy summary -->
   <section>
     <h2 class="text-[13px] font-bold tracking-widest text-mut mb-2.5 px-1">ENERGY</h2>
@@ -159,13 +186,14 @@
       <button data-range="day" class="active">Day</button>
       <button data-range="week">Week</button>
       <button data-range="month">Month</button>
+      <button data-range="billing">Billing</button>
     </div>
     <div id="homePeriodNav" class="flex justify-between items-center px-1 mb-2" hidden>
       <button id="homePeriodPrev" class="lg-btn lg-btn-ghost px-4 py-1.5 text-[15px]">‹</button>
       <span id="homePeriodLabel" class="text-[13px] font-semibold"></span>
       <button id="homePeriodNext" class="lg-btn lg-btn-ghost px-4 py-1.5 text-[15px]">›</button>
     </div>
-    <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
+    <div class="grid grid-cols-2 sm:grid-cols-5 gap-3">
       <div class="glass rounded-2xl p-3.5 flex flex-col gap-1">
         <span class="text-mut text-[10px] font-semibold tracking-wider">SOLAR GEN</span>
         <span class="text-[17px] font-bold tnum text-ios-amber"><span id="stSolarGen">–</span><span class="text-[11px] font-normal text-mut ml-0.5">kWh</span></span>
@@ -181,6 +209,10 @@
       <div class="glass rounded-2xl p-3.5 flex flex-col gap-1">
         <span class="text-mut text-[10px] font-semibold tracking-wider">HOUSE USED</span>
         <span class="text-[17px] font-bold tnum"><span id="stHouseUsed">–</span><span class="text-[11px] font-normal text-mut ml-0.5">kWh</span></span>
+      </div>
+      <div class="glass rounded-2xl p-3.5 flex flex-col gap-1">
+        <span class="text-mut text-[10px] font-semibold tracking-wider">COST</span>
+        <span class="text-[17px] font-bold tnum"><span id="stCost">–</span><span id="stCostCur" class="text-[11px] font-normal text-mut ml-0.5">€</span></span>
       </div>
     </div>
   </section>

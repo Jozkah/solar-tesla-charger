@@ -630,8 +630,6 @@ function renderStats(st) {
   ];
   // Marginal cost of the grid energy that charged the car (VAT-inclusive).
   if (st.chargeCost) cells.push(['Charge cost', st.chargeCost.total.toFixed(2), st.chargeCost.currency]);
-  // Whole-home estimated grid-import cost for the period (incl. standing charges).
-  if (st.cost) cells.push(['Cost', st.cost.total.toFixed(2), st.cost.currency]);
   $('statsGrid').innerHTML = cells.map(([k, v, u]) =>
     `<div class="glass rounded-2xl p-3.5 flex flex-col gap-1">
        <span class="text-[10px] font-semibold text-mut uppercase tracking-wider">${k}</span>
@@ -639,80 +637,6 @@ function renderStats(st) {
      </div>`).join('');
 }
 function fmtDur(min) { if (!min) return '0m'; const h = Math.floor(min / 60), m = min % 60; return h ? `${h}h ${m}m` : `${m}m`; }
-
-// --- Settings (billing day + tariff) ---------------------------------------
-let tariffState = null;
-
-function winToStr(windows) {
-  return (windows || []).map(([s, e]) => `${s}-${e}`).join(',');
-}
-function parseWindows(str) {
-  const out = [];
-  for (const part of str.split(',').map((s) => s.trim()).filter(Boolean)) {
-    const m = part.match(/^(\d+)\s*-\s*(\d+)$/);
-    if (!m) throw new Error(`bad window "${part}" — use e.g. 0-8,22-24`);
-    out.push([Number(m[1]), Number(m[2])]);
-  }
-  return out;
-}
-function fillTariffForm(t) {
-  $('setCurrency').value = t.currency;
-  $('setDailyFixed').value = t.dailyFixed;
-  $('setLevy').value = t.perKwhLevy;
-  $('setFixedMonthly').value = t.fixedMonthly;
-  $('setVat').value = t.vatPct;
-  $('tariffBands').innerHTML = t.bands.map((b, i) =>
-    `<div class="grid grid-cols-3 gap-2 items-center">
-       <span class="text-[12px]">${b.name}</span>
-       <input id="band${i}Rate" type="number" step="0.0001" value="${b.rate}" class="px-2 py-1.5 rounded-xl text-[14px] tnum" style="background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.12);color:#f2f2f7" />
-       <input id="band${i}Win" type="text" value="${winToStr(b.windows)}" placeholder="0-8,22-24" class="px-2 py-1.5 rounded-xl text-[13px]" style="background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.12);color:#f2f2f7" />
-     </div>`).join('');
-}
-async function loadSettings() {
-  try {
-    const s = await (await fetch('/api/settings')).json();
-    $('setBillingDay').value = s.billingDay;
-    tariffState = s.tariff;
-    fillTariffForm(s.tariff);
-  } catch { /* leave form empty */ }
-}
-async function saveSettings() {
-  const err = $('settingsError');
-  err.hidden = true;
-  try {
-    const bands = tariffState.bands.map((b, i) => ({
-      name: b.name,
-      rate: Number($(`band${i}Rate`).value),
-      windows: parseWindows($(`band${i}Win`).value),
-    }));
-    const body = {
-      billingDay: Number($('setBillingDay').value),
-      tariff: {
-        currency: $('setCurrency').value,
-        bands,
-        dailyFixed: Number($('setDailyFixed').value),
-        perKwhLevy: Number($('setLevy').value),
-        fixedMonthly: Number($('setFixedMonthly').value),
-        vatPct: Number($('setVat').value),
-      },
-    };
-    const res = await fetch('/api/settings', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
-    });
-    if (!res.ok) { const j = await res.json().catch(() => ({})); throw new Error(j.error || 'save failed'); }
-    const saved = await res.json();
-    tariffState = saved.tariff;
-    fillTariffForm(saved.tariff);
-    $('settingsPanel').hidden = true;
-    refreshStats();
-  } catch (e) {
-    err.textContent = e.message;
-    err.hidden = false;
-  }
-}
-$('settingsToggle')?.addEventListener('click', () => { $('settingsPanel').hidden = !$('settingsPanel').hidden; });
-$('settingsSave')?.addEventListener('click', saveSettings);
-loadSettings();
 
 // --- Controls wiring --------------------------------------------------------
 async function post(path, body) {

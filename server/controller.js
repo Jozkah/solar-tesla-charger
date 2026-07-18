@@ -460,14 +460,25 @@ function setComputed(meters, d) {
 
 // --- Live loop (fast, dashboard) -------------------------------------------
 
+// setInterval(live, ~2s) has no natural back-pressure: if a tick runs long
+// (e.g. a hung WC even at the capped ~1xtimeout), the next tick fires anyway
+// and cycles pile up concurrently, each racing to write state.meters/state.wc.
+// This guard makes a slow tick skip the next one instead of overlapping it.
+let liveBusy = false;
+
 async function liveCycle() {
+  if (liveBusy) return;
+  liveBusy = true;
   const now = Date.now();
   try {
     const [meters, wcRead] = await Promise.all([shelly.readMeters(), wallconnector.readVitals()]);
     state.meters = meters;
     const { wc, good } = resolveWcReading({ read: wcRead, lastGood: lastGoodWc, lastGoodAt: lastGoodWcAt, nowMs: now, graceMs: WC_GRACE_MS });
     state.wc = wc;
-    if (good) { lastGoodWc = wcRead; lastGoodWcAt = now; }
+    // Math.max guards against a stale write if ticks ever resolve out of
+    // order (the liveBusy guard above already prevents overlap, but this
+    // keeps lastGoodWcAt monotonic even so — belt and suspenders).
+    if (good) { lastGoodWc = wcRead; lastGoodWcAt = Math.max(lastGoodWcAt, now); }
     state.solax = solax.getCached(); // cached; refreshes itself at most once per pollSec
     const loc = state.car?.location;
     state.weather = weather.getCached(loc?.lat, loc?.lon); // cached; refreshes ~every pollMin
@@ -483,6 +494,8 @@ async function liveCycle() {
   } catch (err) {
     state.lastError = `shelly: ${err.message}`;
     emit();
+  } finally {
+    liveBusy = false;
   }
 }
 

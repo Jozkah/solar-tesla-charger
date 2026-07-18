@@ -157,10 +157,13 @@ const saveDayRollupStmt = db.prepare(`
 const ZERO_HOURS = () => new Array(24).fill(0);
 
 // Parse a stored per-hour JSON histogram back to a length-24 number array.
-// Any legacy null / corrupt / wrong-length value degrades to zeros so folding
-// and cost math never see undefined.
+// A NULL column (a rollup persisted BEFORE these columns existed) returns null,
+// not zeros: that null is the legacy signal stats.js's dayRollup uses to decide
+// whether to self-heal the row. A present-but-corrupt/wrong-length value can't
+// be trusted or backfilled from here, so it degrades to zeros. foldRollups and
+// the cost path both tolerate a null histogram (treated as zeros when summed).
 function parseHourArr(raw) {
-  if (raw == null) return ZERO_HOURS();
+  if (raw == null) return null;
   try {
     const a = JSON.parse(raw);
     return Array.isArray(a) && a.length === 24 ? a : ZERO_HOURS();

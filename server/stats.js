@@ -69,7 +69,13 @@ function dayRollup(dayStart, historyStart, retentionStart) {
   // samples were gone — this is the fix for that.
   if (isDayComplete(dayStart, now)) {
     const hit = readDayRollup(dayStart);
-    if (hit) return hit;
+    // Trust a stored complete day UNLESS it predates the per-hour histogram
+    // columns (import_wh_by_hour === null for a legacy rollup) AND its samples
+    // are still within retention to backfill from — then fall through to
+    // recompute+repersist ONCE, so time-of-use cost isn't permanently zero for
+    // days rolled up before this feature. Beyond retention (samples pruned) the
+    // stored row is kept as-is; its histograms stay zero, unavoidable.
+    if (hit && (hit.import_wh_by_hour != null || dayStart < retentionStart)) return hit;
   }
   const persist = shouldPersistDay(dayStart, now, historyStart, retentionStart);
   const before = queries.sampleBefore.get(dayStart);   // last charging sample; seeds prevAmps

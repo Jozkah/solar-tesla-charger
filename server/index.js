@@ -7,6 +7,8 @@ import config from './config.js';
 import * as controller from './controller.js';
 import * as stats from './stats.js';
 import * as settings from './settings.js';
+import * as drives from './drives.js';
+import * as fuel from './fuel.js';
 import * as teslaAuth from './teslaAuth.js';
 import * as notify from './notify.js';
 import * as cameras from './cameras.js';
@@ -64,6 +66,37 @@ app.get('/api/stats', (req, res) => {
 app.get('/api/series', (req, res) => {
   const hours = Math.min(720, Math.max(1, Number(req.query.hours) || 1));
   res.json(stats.getSeries(hours));
+});
+
+// Fuel comparison inputs: lifetime avg Wh/km (TeslaMate) + national 98 price
+// (DGEG). Both period-independent, so no range params. Always 200 with
+// fallbacks — a DGEG/TeslaMate outage degrades the tiles, never the page.
+app.get('/api/fuel', async (req, res) => {
+  try {
+    const wh = await drives.avgWhPerKm();
+    const price = fuel.getPrice();
+    res.json({
+      whPerKm: wh.whPerKm,
+      whPerKmEstimated: wh.estimated,
+      price: price.price,
+      currency: price.currency,
+      priceDate: price.date,
+      priceScope: price.scope,
+      priceStale: price.stale,
+      iceLPer100: config.fuel.iceLPer100,
+    });
+  } catch {
+    res.json({
+      whPerKm: config.fuel.fallbackWhPerKm,
+      whPerKmEstimated: true,
+      price: config.fuel.fallbackEurL,
+      currency: 'EUR',
+      priceDate: null,
+      priceScope: config.fuel.scope,
+      priceStale: true,
+      iceLPer100: config.fuel.iceLPer100,
+    });
+  }
 });
 
 // Billing day + time-of-use tariff, persisted in the SQLite settings KV store.

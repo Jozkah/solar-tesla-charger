@@ -605,7 +605,7 @@ try {
     statsNav = createPeriodNav({
       navEl: $('periodNav'), labelEl: $('periodLabel'),
       prevEl: $('periodPrev'), nextEl: $('periodNext'), segEl: $('rangeSeg'),
-      onData: renderStats,
+      onData: (st) => { lastStatsForFuel = st; renderStats(st); renderFuel(st); },
     });
   } else {
     console.error('period-nav.js did not load — stats navigation disabled');
@@ -637,6 +637,47 @@ function renderStats(st) {
      </div>`).join('');
 }
 function fmtDur(min) { if (!min) return '0m'; const h = Math.floor(min / 60), m = min % 60; return h ? `${h}h ${m}m` : `${m}m`; }
+
+// --- Efficiency & fuel ------------------------------------------------------
+// km the charge is worth (chargedKwh ÷ avgWhPerKm) and what those km would cost
+// in petrol vs what the grid charge actually cost. Never a driven-distance sum.
+let fuelInfo = null;        // { whPerKm, whPerKmEstimated, price, iceLPer100, ... }
+let lastStatsForFuel = null; // last /api/stats payload, for re-render when fuel loads
+function fuelTile(k, v, u) {
+  return `<div class="glass rounded-2xl p-3.5 flex flex-col gap-1">
+       <span class="text-[10px] font-semibold text-mut uppercase tracking-wider">${k}</span>
+       <span class="text-[15px] font-bold tnum">${v}<span class="text-[11px] font-normal text-mut"> ${u}</span></span>
+     </div>`;
+}
+function renderFuel(st) {
+  const grid = $('fuelGrid');
+  if (!grid) return;
+  const note = $('fuelNote');
+  const f = fuelInfo;
+  if (!f) {
+    grid.innerHTML = ['Wh/km', 'Charged km', 'Petrol cost', 'Saved vs petrol']
+      .map((k) => fuelTile(k, '—', '')).join('');
+    if (note) note.textContent = '';
+    return;
+  }
+  const energyWh = st?.car?.energyWh || 0;
+  const wh = f.whPerKm > 0 ? f.whPerKm : 200;
+  const km = energyWh / wh;                       // Wh ÷ (Wh/km) = km
+  const petrol = (km / 100) * f.iceLPer100 * f.price;
+  const elec = st?.chargeCost ? st.chargeCost.total : null; // grid charge cost (solar free)
+  const saved = elec != null ? petrol - elec : null;
+  grid.innerHTML = [
+    ['Wh/km', (f.whPerKmEstimated ? '~' : '') + Math.round(wh), ''],
+    ['Charged km', km >= 100 ? km.toFixed(0) : km.toFixed(1), 'km'],
+    ['Petrol cost', petrol.toFixed(2), '€'],
+    ['Saved vs petrol', saved != null ? saved.toFixed(2) : '–', saved != null ? '€' : ''],
+  ].map(([k, v, u]) => fuelTile(k, v, u)).join('');
+  if (note) {
+    const d = f.priceDate ? ` · upd ${f.priceDate}` : '';
+    const stale = f.priceStale ? ' (est.)' : '';
+    note.textContent = `98 @ ${f.price.toFixed(3)} €/L · ${f.priceScope} avg${stale}${d} · saved vs grid charge cost (solar is free)`;
+  }
+}
 
 // --- Controls wiring --------------------------------------------------------
 async function post(path, body) {
@@ -705,6 +746,14 @@ $('ic-volt').innerHTML = icon('gauge', 20);
 // Load site location once, then (re)draw so sun markers appear.
 fetch('/api/config').then((r) => r.json()).then((c) => {
   if (Number.isFinite(c?.lat) && Number.isFinite(c?.lon)) { geo = c; drawChart(); }
+}).catch(() => {});
+
+// Fuel comparison inputs (avg Wh/km + 98 price) change ~daily — fetch once and
+// re-render the fuel tiles against the last stats payload when it arrives.
+renderFuel(null); // placeholder tiles until the fetch resolves
+fetch('/api/fuel').then((r) => r.json()).then((f) => {
+  fuelInfo = f;
+  if (lastStatsForFuel) renderFuel(lastStatsForFuel);
 }).catch(() => {});
 
 loadChartHistory();

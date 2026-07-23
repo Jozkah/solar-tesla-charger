@@ -174,12 +174,13 @@
         <span class="text-[22px] font-bold tnum"><span id="car">–</span><span class="text-sm font-normal text-mut ml-0.5">kW</span></span>
       </div>
       <div class="glass rounded-2xl p-4 flex flex-col gap-1.5">
-        <div class="flex justify-between items-center"><span class="text-mut text-[11px] font-semibold tracking-wider">EXPORT</span></div>
-        <span class="text-[22px] font-bold tnum" style="color:#30D158"><span id="export">–</span><span class="text-sm font-normal text-mut ml-0.5">W</span></span>
+        <div class="flex justify-between items-center"><span id="gridLabel" class="text-mut text-[11px] font-semibold tracking-wider">GRID</span></div>
+        <span id="gridVal" class="text-[22px] font-bold tnum"><span id="grid">–</span><span class="text-sm font-normal text-mut ml-0.5">W</span></span>
       </div>
       <div class="glass rounded-2xl p-4 flex flex-col gap-1.5">
-        <div class="flex justify-between items-center"><span class="text-mut text-[11px] font-semibold tracking-wider">IMPORT</span></div>
-        <span class="text-[22px] font-bold tnum" style="color:#FF453A"><span id="import">–</span><span class="text-sm font-normal text-mut ml-0.5">W</span></span>
+        <div class="flex justify-between items-center"><span class="text-mut text-[11px] font-semibold tracking-wider">GRID V · PF</span></div>
+        <span class="text-[22px] font-bold tnum"><span id="volt">–</span><span class="text-sm font-normal text-mut ml-0.5">V</span></span>
+        <span id="pfSub" class="text-[11px] text-mut">&nbsp;</span>
       </div>
     </div>
     <div class="seg mt-4 mb-2" id="homeRangeSeg">
@@ -193,10 +194,14 @@
       <span id="homePeriodLabel" class="text-[13px] font-semibold"></span>
       <button id="homePeriodNext" class="lg-btn lg-btn-ghost px-4 py-1.5 text-[15px]">›</button>
     </div>
-    <div class="grid grid-cols-2 sm:grid-cols-5 gap-3">
+    <div class="grid grid-cols-3 sm:grid-cols-6 gap-3">
       <div class="glass rounded-2xl p-3.5 flex flex-col gap-1">
         <span class="text-mut text-[10px] font-semibold tracking-wider">SOLAR GEN</span>
         <span class="text-[17px] font-bold tnum text-ios-amber"><span id="stSolarGen">–</span><span class="text-[11px] font-normal text-mut ml-0.5">kWh</span></span>
+      </div>
+      <div class="glass rounded-2xl p-3.5 flex flex-col gap-1">
+        <span class="text-mut text-[10px] font-semibold tracking-wider">SOLAR USED</span>
+        <span class="text-[17px] font-bold tnum text-ios-amber"><span id="stSolarUsed">–</span><span class="text-[11px] font-normal text-mut ml-0.5">kWh</span></span>
       </div>
       <div class="glass rounded-2xl p-3.5 flex flex-col gap-1">
         <span class="text-mut text-[10px] font-semibold tracking-wider">EXPORTED</span>

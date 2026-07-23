@@ -118,8 +118,6 @@ function renderEnergy(s) {
   const solar = solarTotal(s);
   const gp = m.gridPower; // + import, − export
   const carW = Math.max(0, c.chargeW || 0);        // the car (charge + standby draw)
-  const exportW = gp < 0 ? -gp : 0;
-  const importW = gp > 0 ? gp : 0;
   // House per the actual metering topology: Andar de Cima (floor1) + Andar de
   // Baixo (floor2) + SolaX − car. SolaX injects into Andar de Baixo, which makes
   // that meter read LOWER (net = load − injection), so ADD SolaX back to recover
@@ -134,8 +132,18 @@ function renderEnergy(s) {
   $('solarSub').textContent = solaxW != null ? `Growatt ${fmtW(growattW)} · SolaX ${fmtW(solaxW)} W` : `${fmtW(solar)} W now`;
   $('house').textContent = fmtKw(houseW);
   $('car').textContent = carW > 50 ? fmtKw(carW) : '0';
-  $('export').textContent = fmtW(exportW);
-  $('import').textContent = fmtW(importW);
+  // Smart grid pill: one tile that flips label + colour by direction (gp is
+  // + import / − export). A small dead-band avoids flicker around zero.
+  const gridEl = $('grid'), gridLabel = $('gridLabel'), gridVal = $('gridVal');
+  if (gp > 5) { gridLabel.textContent = 'IMPORT'; gridVal.style.color = '#FF453A'; gridEl.textContent = fmtW(gp); }
+  else if (gp < -5) { gridLabel.textContent = 'EXPORT'; gridVal.style.color = '#30D158'; gridEl.textContent = fmtW(-gp); }
+  else { gridLabel.textContent = 'GRID'; gridVal.style.color = ''; gridEl.textContent = '0'; }
+  // Grid voltage + power factor — live only (Shelly grid channel, not stored).
+  const gridCh = m.channels?.grid || {};
+  const volt = gridCh.voltage ?? m.voltage ?? c.voltage;
+  const pf = gridCh.pf;
+  $('volt').textContent = volt != null ? Math.round(volt) : '–';
+  $('pfSub').textContent = pf != null ? `PF ${Number(pf).toFixed(2)}` : ' ';
 }
 
 // --- House per-circuit meters (ported from the Tesla view) -------------------
@@ -274,6 +282,93 @@ function niceCeil(v) {
   return m * pow;
 }
 function hhmm(d) { return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); }
+
+// --- Day separators + sunrise/sunset markers (ported from the charger chart) --
+let geo = null; // { lat, lon } from /api/config; enables sun markers when set.
+const DAY_MS = 86400_000;
+// Absolute epoch-ms sunrise/sunset for the calendar day containing `date` at
+// lat/lon. Compact NOAA/SunCalc port; NaN on polar day/night — callers guard.
+const SUN = (() => {
+  const rad = Math.PI / 180, dayMs = DAY_MS, J1970 = 2440588, J2000 = 2451545;
+  const e = rad * 23.4397;
+  const toDays = (d) => d.valueOf() / dayMs - 0.5 + J1970 - J2000;
+  const fromJ = (j) => (j + 0.5 - J1970) * dayMs;
+  const meanAnomaly = (d) => rad * (357.5291 + 0.98560028 * d);
+  const eclipticLng = (M) => M + rad * (1.9148 * Math.sin(M) + 0.02 * Math.sin(2 * M) + 0.0003 * Math.sin(3 * M)) + rad * 102.9372 + Math.PI;
+  const declination = (L) => Math.asin(Math.sin(e) * Math.sin(L));
+  const J0 = 0.0009;
+  const transitJ = (ds, M, L) => J2000 + ds + 0.0053 * Math.sin(M) - 0.0069 * Math.sin(2 * L);
+  return function sunTimes(date, lat, lon) {
+    const lw = rad * -lon, phi = rad * lat, d = toDays(date);
+    const n = Math.round(d - J0 - lw / (2 * Math.PI));
+    const ds = J0 + lw / (2 * Math.PI) + n;
+    const M = meanAnomaly(ds), L = eclipticLng(M), dec = declination(L);
+    const Jnoon = transitJ(ds, M, L);
+    const h0 = -0.833 * rad;
+    const w = Math.acos((Math.sin(h0) - Math.sin(phi) * Math.sin(dec)) / (Math.cos(phi) * Math.cos(dec)));
+    const Jset = transitJ(J0 + (w + lw) / (2 * Math.PI) + n, M, L);
+    return { sunrise: fromJ(Jnoon - (Jset - Jnoon)), sunset: fromJ(Jset) };
+  };
+})();
+
+// Interpolated canvas-x for epoch-ms `t`, positioned against the (index-scaled)
+// series so overlays land exactly on the plotted curve even if sampling is
+// uneven. Clamps to the ends.
+function xAtTime(t, series, X) {
+  const n = series.length;
+  if (!n) return null;
+  if (t <= series[0].ts) return X(0);
+  if (t >= series[n - 1].ts) return X(n - 1);
+  let lo = 0, hi = n - 1;
+  while (hi - lo > 1) { const mid = (lo + hi) >> 1; if (series[mid].ts <= t) lo = mid; else hi = mid; }
+  const t0 = series[lo].ts, t1 = series[hi].ts;
+  return X(lo + (t1 > t0 ? (t - t0) / (t1 - t0) : 0));
+}
+function localMidnight(t) { const d = new Date(t); d.setHours(0, 0, 0, 0); return d.getTime(); }
+
+// Draw day separators, night shading and sun markers. `layer` = 'back' (night
+// shading, before the data) or 'front' (separators + sun lines/labels, on top).
+function drawDayNight(ctx, series, X, padT, H, layer) {
+  if (series.length < 2) return;
+  const x0 = series[0].ts, x1 = series[series.length - 1].ts;
+  const showSun = geo && Number.isFinite(geo.lat) && Number.isFinite(geo.lon) && (x1 - x0) <= 8 * DAY_MS;
+  const yTop = padT, yBot = padT + H;
+  ctx.save();
+  ctx.font = '10px Inter, sans-serif';
+  for (let day = localMidnight(x0); day <= x1; day += DAY_MS) {
+    const dayEnd = day + DAY_MS;
+    const sun = showSun ? SUN(new Date(day + DAY_MS / 2), geo.lat, geo.lon) : null;
+    if (layer === 'back' && sun) {
+      ctx.fillStyle = 'rgba(10,18,32,.28)';
+      const band = (a, b) => {
+        const xa = xAtTime(Math.max(x0, a), series, X), xb = xAtTime(Math.min(x1, b), series, X);
+        if (xb - xa >= 0.5) ctx.fillRect(xa, yTop, xb - xa, H);
+      };
+      if (Number.isFinite(sun.sunrise)) band(day, sun.sunrise);
+      if (Number.isFinite(sun.sunset)) band(sun.sunset, dayEnd);
+    }
+    if (layer === 'front' && day > x0 && day < x1) {
+      const x = xAtTime(day, series, X);
+      ctx.strokeStyle = 'rgba(132,153,189,.35)'; ctx.lineWidth = 1; ctx.setLineDash([2, 3]);
+      ctx.beginPath(); ctx.moveTo(x, yTop); ctx.lineTo(x, yBot); ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = 'rgba(132,153,189,.75)'; ctx.textAlign = 'left';
+      ctx.fillText(new Date(day).toLocaleDateString(undefined, { day: 'numeric', month: 'short' }), x + 3, yBot - 3);
+    }
+    if (layer === 'front' && sun) {
+      const mark = (t, glyph) => {
+        if (!Number.isFinite(t) || t < x0 || t > x1) return;
+        const x = xAtTime(t, series, X);
+        ctx.strokeStyle = 'rgba(251,191,36,.5)'; ctx.lineWidth = 1; ctx.setLineDash([]);
+        ctx.beginPath(); ctx.moveTo(x, yTop); ctx.lineTo(x, yBot); ctx.stroke();
+        ctx.fillStyle = '#fbbf24'; ctx.textAlign = 'center'; ctx.fillText(glyph, x, yTop + 11);
+      };
+      mark(sun.sunrise, '🌅');
+      mark(sun.sunset, '🌇');
+    }
+  }
+  ctx.restore();
+}
 function renderChart(hoverIndex) {
   const canvas = $('chart'), empty = $('chartEmpty'), tip = $('chartTip');
   const series = chartSeries;
@@ -291,6 +386,7 @@ function renderChart(hoverIndex) {
   const X = (i) => padL + (series.length === 1 ? W / 2 : (i / (series.length - 1)) * W);
   const Y = (v) => padT + H - (v / niceMax) * H;
   chartGeom = { padL, W, n: series.length };
+  drawDayNight(ctx, series, X, padT, H, 'back'); // night shading behind the data
   ctx.font = '10px Inter, sans-serif';
   for (let g = 0; g <= 2; g++) {
     const gv = (niceMax * g) / 2, gy = Y(gv);
@@ -311,6 +407,7 @@ function renderChart(hoverIndex) {
   drawSeries('imp', '#FF453A', 'rgba(255,69,58,.10)');
   drawSeries('house', '#bf5af2', 'rgba(191,90,242,.08)');
   drawSeries('car', '#60a5fa', 'rgba(96,165,250,.08)');
+  drawDayNight(ctx, series, X, padT, H, 'front'); // separators + sun markers on top
   ctx.fillStyle = '#9a9aa2';
   ctx.textAlign = 'left'; ctx.fillText(hhmm(new Date(series[0].ts)), padL, cssH - 5);
   ctx.textAlign = 'right'; ctx.fillText(hhmm(new Date(series[series.length - 1].ts)), padL + W, cssH - 5);
@@ -500,6 +597,9 @@ function loadStats() { if (statsNav) statsNav.refresh(); }
 function renderStats(st) {
   const h = st.home || {};
   $('stSolarGen').textContent = fmtKwh(h.solarGeneratedWh);
+  // Solar self-consumed = generated − exported (what stayed on-site).
+  const solarUsed = h.solarGeneratedWh == null ? null : Math.max(0, h.solarGeneratedWh - (h.exportedWh || 0));
+  $('stSolarUsed').textContent = fmtKwh(solarUsed);
   $('stExported').textContent = fmtKwh(h.exportedWh);
   $('stImported').textContent = fmtKwh(h.importedWh);
   $('stHouseUsed').textContent = fmtKwh(h.usedWh);
@@ -587,6 +687,11 @@ $('ic-car').innerHTML = icon('bolt');
 $('ic-house').innerHTML = icon('house');
 loadCameras();
 loadWeather();
+// Site location for the chart's sunrise/sunset markers; redraw once it lands.
+fetch('/api/config').then((r) => r.json()).then((c) => {
+  if (Number.isFinite(c?.lat) && Number.isFinite(c?.lon)) { geo = { lat: c.lat, lon: c.lon }; renderChart(); }
+}).catch(() => {});
+
 loadChart();
 loadStats();
 connect();

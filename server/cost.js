@@ -102,6 +102,14 @@ export function computeChargeCost({ carGridKwhByBand, tariff }) {
   return { currency: tariff.currency, total: round2(total), vatPct: tariff.vatPct, kwh: round2(totalKwh), bands };
 }
 
+// A "monthly" flat charge is prorated across a nominal 30-day month so any
+// window carries only its share (elapsedDays / 30) — a single day gets 1/30 of
+// it, not the whole month. Prior code added fixedMonthly in full on every call,
+// which over-billed short windows (a day showed the entire monthly fee) while a
+// full billing period happened to be right. dailyFixed is already per-day, so
+// only fixedMonthly needed proration.
+const NOMINAL_DAYS_PER_MONTH = 30;
+
 export function computeCost({ bandKwh, tariff, elapsedDays }) {
   const bands = tariff.bands.map((b, i) => {
     const kwh = bandKwh[i] || 0;
@@ -111,7 +119,8 @@ export function computeCost({ bandKwh, tariff, elapsedDays }) {
   const totalKwh = bandKwh.reduce((a, b) => a + b, 0);
   const levy = totalKwh * tariff.perKwhLevy;
   const daily = elapsedDays * tariff.dailyFixed;
-  const preVat = energyCost + levy + daily + tariff.fixedMonthly;
+  const monthly = tariff.fixedMonthly * (elapsedDays / NOMINAL_DAYS_PER_MONTH);
+  const preVat = energyCost + levy + daily + monthly;
   const total = preVat * (1 + tariff.vatPct / 100);
   return {
     currency: tariff.currency,

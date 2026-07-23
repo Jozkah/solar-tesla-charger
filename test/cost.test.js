@@ -74,17 +74,30 @@ test('importKwhByBand buckets by sample midpoint hour, import only', () => {
   assert.equal(kwh[1], 0);
 });
 
-test('computeCost applies rates, levy, daily, fixed and VAT', () => {
+test('computeCost applies rates, levy, daily, prorated monthly and VAT', () => {
   const tariff = {
     currency: '$', vatPct: 10, dailyFixed: 1, perKwhLevy: 0.01, fixedMonthly: 2,
     bands: [{ name: 'peak', rate: 0.2, windows: [[8, 22]] }, { name: 'off', rate: 0.1, windows: [[0, 8]] }],
   };
   const r = computeCost({ bandKwh: [10, 20], tariff, elapsedDays: 5 });
-  assert.equal(r.total, 12.43);
+  // energy = 10*0.2 + 20*0.1 = 4 ; levy = 30*0.01 = 0.3 ; daily = 5*1 = 5 ;
+  // monthly = 2 * 5/30 = 0.3333 ; preVat = 9.6333 ; total = *1.1 = 10.60
+  assert.equal(r.total, 10.6);
   assert.equal(r.currency, '$');
   assert.equal(r.vatPct, 10);
   assert.equal(r.bands[0].kwh, 10);
   assert.equal(r.bands[0].cost, 2);
+});
+
+test('computeCost prorates fixedMonthly per day (1 day carries 1/30, not the whole month)', () => {
+  const tariff = {
+    currency: '€', vatPct: 0, dailyFixed: 0, perKwhLevy: 0, fixedMonthly: 30,
+    bands: [{ name: 'flat', rate: 0, windows: [[0, 24]] }],
+  };
+  // Only the monthly charge is non-zero, so total == its prorated share.
+  assert.equal(computeCost({ bandKwh: [0], tariff, elapsedDays: 1 }).total, 1);   // 30/30
+  assert.equal(computeCost({ bandKwh: [0], tariff, elapsedDays: 30 }).total, 30); // full month
+  assert.equal(computeCost({ bandKwh: [0], tariff, elapsedDays: 15 }).total, 15); // half
 });
 
 test('computeChargeCost is energy + levy + VAT only (no standing charges)', () => {

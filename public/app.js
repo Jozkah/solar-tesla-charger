@@ -759,4 +759,4 @@ fetch('/api/fuel').then((r) => r.json()).then((f) => {
 loadChartHistory();
 refreshStats();
 connect();
-setInterval(refreshStats, 15000);
+// Stats polling + refresh-on-wake live inside createPeriodNav (period-nav.js).

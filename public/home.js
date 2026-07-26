@@ -697,4 +697,4 @@ loadStats();
 connect();
 chartTimer = setInterval(loadChart, 20_000);
 setInterval(loadWeather, 600_000);
-setInterval(loadStats, 60_000);
+// Stats polling + refresh-on-wake live inside createPeriodNav (period-nav.js).

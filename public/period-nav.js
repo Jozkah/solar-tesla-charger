@@ -66,6 +66,21 @@
       onData(st);
     }
 
+    // The stat tiles are pull-only — unlike the live tiles nothing pushes them
+    // over the SSE stream — so poll them at the cadence the rest of the page
+    // feels live at, and refresh the instant the page comes back into view.
+    // Timers are frozen while an iOS standalone webview is backgrounded (or a
+    // tab is hidden), which is what used to leave the tiles stuck at their
+    // pre-sleep values until a range button was tapped: that called refresh()
+    // by hand and made the stale numbers jump.
+    const POLL_MS = 15_000;
+    const refreshIfVisible = () => { if (!document.hidden) refresh(); };
+    setInterval(refreshIfVisible, POLL_MS);
+    document.addEventListener('visibilitychange', refreshIfVisible);
+    // bfcache / home-screen restore. Only when persisted — a plain load already
+    // fetches once via the caller's own boot refresh.
+    window.addEventListener('pageshow', (e) => { if (e && e.persisted) refresh(); });
+
     if (prevEl) prevEl.addEventListener('click', () => { if (offset < (RANGE_MAX_OFFSET[range] ?? 0)) { offset++; refresh(); } });
     if (nextEl) nextEl.addEventListener('click', () => { if (offset > 0) { offset--; refresh(); } });
     if (segEl) {

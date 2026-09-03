@@ -10,6 +10,14 @@
 // This file is the pure, network-free half (plus fetchEmData, which takes an
 // injectable fetch); server/backfill.js wires it to config, the DB and timers.
 
+import { Agent } from 'undici';
+
+// A Gen1 EM connects slowly and, if the TCP connect is aborted mid-attempt,
+// gets stuck serving a phantom transfer until it reboots. undici's default
+// 10 s connect timeout was aborting connects to the slower meter and doing
+// exactly that, so give connect and the (multi-minute) body generous limits.
+const emDispatcher = new Agent({ connect: { timeout: 60_000 }, headersTimeout: 30 * 60_000, bodyTimeout: 30 * 60_000 });
+
 export const BUSY_BODY = 'Another file transfer is in progress!';
 export const DEFAULT_INTERVAL_MS = 600_000;
 
@@ -105,7 +113,7 @@ export function bucketsToSamples({ channels, from, to }) {
 // Never abort a transfer early: the device would keep its transfer flag set
 // until it reboots. The full log is a few MB at ~8 KB/s, so allow a long time.
 export async function fetchEmData(ip, index, { timeoutMs = 30 * 60_000, fetchImpl = fetch } = {}) {
-  const res = await fetchImpl(`http://${ip}/emeter/${index}/em_data.csv`, { signal: AbortSignal.timeout(timeoutMs) });
+  const res = await fetchImpl(`http://${ip}/emeter/${index}/em_data.csv`, { signal: AbortSignal.timeout(timeoutMs), dispatcher: emDispatcher });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   const text = await res.text();
   if (text.startsWith(BUSY_BODY)) throw new Error('device busy with another transfer');

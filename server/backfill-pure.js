@@ -102,7 +102,9 @@ export function bucketsToSamples({ channels, from, to }) {
 
 // One download. The device answers 200 with BUSY_BODY when another transfer
 // is running, so that body is an error, not data.
-export async function fetchEmData(ip, index, { timeoutMs = 10 * 60_000, fetchImpl = fetch } = {}) {
+// Never abort a transfer early: the device would keep its transfer flag set
+// until it reboots. The full log is a few MB at ~8 KB/s, so allow a long time.
+export async function fetchEmData(ip, index, { timeoutMs = 30 * 60_000, fetchImpl = fetch } = {}) {
   const res = await fetchImpl(`http://${ip}/emeter/${index}/em_data.csv`, { signal: AbortSignal.timeout(timeoutMs) });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   const text = await res.text();

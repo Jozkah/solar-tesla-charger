@@ -17,6 +17,8 @@ import { downloadChannels } from './backfill-download.js';
 
 export const SETTING_KEY = 'flat_repair_v1_done_at';
 const STARTUP_DELAY_MS = 90_000; // let the live loop settle first
+const RETRY_DELAY_MS = 30 * 60_000; // a busy meter can stay busy a long while; keep trying in-process
+const MAX_ATTEMPTS = 6;
 
 export async function repairFlatRuns({ since = 0, dryRun = false, log = console.log } = {}) {
   const rows = db.queries.samplesSince.all(since);
@@ -46,16 +48,21 @@ export async function repairFlatRuns({ since = 0, dryRun = false, log = console.
   return summary;
 }
 
-export function runOnceAtStartup() {
+export function runOnceAtStartup(attempt = 1) {
   if (db.getSetting(SETTING_KEY)) return null;
   const t = setTimeout(async () => {
     try {
       await repairFlatRuns({});
       db.setSetting(SETTING_KEY, new Date().toISOString());
     } catch (e) {
-      console.warn(`[repair] startup repair failed, will retry next start: ${e.message || e}`);
+      if (attempt < MAX_ATTEMPTS) {
+        console.warn(`[repair] attempt ${attempt}/${MAX_ATTEMPTS} failed, retrying in ${RETRY_DELAY_MS / 60_000} min: ${e.message || e}`);
+        runOnceAtStartup(attempt + 1);
+      } else {
+        console.warn(`[repair] giving up for this run; will retry next start: ${e.message || e}`);
+      }
     }
-  }, STARTUP_DELAY_MS);
+  }, attempt === 1 ? STARTUP_DELAY_MS : RETRY_DELAY_MS);
   if (typeof t.unref === 'function') t.unref();
   return t;
 }

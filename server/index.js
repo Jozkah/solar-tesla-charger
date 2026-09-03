@@ -1,11 +1,19 @@
 // Express app: serves the dashboard, exposes the REST API used by both the
 // dashboard and Apple Shortcuts, and starts the control loop.
+import path from 'node:path';
 import express from 'express';
+import { request } from 'undici';
 import config from './config.js';
 import * as controller from './controller.js';
 import * as stats from './stats.js';
+import * as settings from './settings.js';
+import * as drives from './drives.js';
+import * as fuel from './fuel.js';
 import * as teslaAuth from './teslaAuth.js';
 import * as notify from './notify.js';
+import * as cameras from './cameras.js';
+import * as kasa from './kasa.js';
+import * as weather from './weather.js';
 
 const app = express();
 app.use(express.json());
@@ -37,18 +45,71 @@ app.get('/api/stream', (req, res) => {
   });
 });
 
+// Max `offset` per calendar range — chosen so the walk can never reach before
+// any plausible install date (day: ~10y, week: ~10y, month: 10y). A flat clamp
+// across all three let `month` reach ~83 years back (offset 1000 = March
+// 1943), which is old enough to precede any real history and poison the DB —
+// see the historyStart guard in stats.js/rollup.js. Ranges without an offset
+// (today/session/all) just clamp to 0.
+const RANGE_MAX_OFFSET = { day: 3650, week: 520, month: 120, billing: 120 };
+
 app.get('/api/stats', (req, res) => {
-  const range = ['today', 'session', 'all', 'day', 'week', 'month'].includes(req.query.range)
+  const range = ['today', 'session', 'all', 'day', 'week', 'month', 'billing'].includes(req.query.range)
     ? req.query.range
     : 'today';
   // Periods back from the current one (day/week/month ranges only).
-  const offset = Math.min(1000, Math.max(0, Math.trunc(Number(req.query.offset) || 0)));
+  const maxOffset = RANGE_MAX_OFFSET[range] ?? 0;
+  const offset = Math.min(maxOffset, Math.max(0, Math.trunc(Number(req.query.offset) || 0)));
   res.json(stats.getStats(range, offset));
 });
 
 app.get('/api/series', (req, res) => {
   const hours = Math.min(720, Math.max(1, Number(req.query.hours) || 1));
   res.json(stats.getSeries(hours));
+});
+
+// Fuel comparison inputs: lifetime avg Wh/km (TeslaMate) + national 98 price
+// (DGEG). Both period-independent, so no range params. Always 200 with
+// fallbacks — a DGEG/TeslaMate outage degrades the tiles, never the page.
+app.get('/api/fuel', async (req, res) => {
+  try {
+    const wh = await drives.avgWhPerKm();
+    const price = fuel.getPrice();
+    res.json({
+      whPerKm: wh.whPerKm,
+      whPerKmEstimated: wh.estimated,
+      price: price.price,
+      currency: price.currency,
+      priceDate: price.date,
+      priceScope: price.scope,
+      priceStale: price.stale,
+      iceLPer100: config.fuel.iceLPer100,
+    });
+  } catch {
+    res.json({
+      whPerKm: config.fuel.fallbackWhPerKm,
+      whPerKmEstimated: true,
+      price: config.fuel.fallbackEurL,
+      currency: 'EUR',
+      priceDate: null,
+      priceScope: config.fuel.scope,
+      priceStale: true,
+      iceLPer100: config.fuel.iceLPer100,
+    });
+  }
+});
+
+// Billing day + time-of-use tariff, persisted in the SQLite settings KV store.
+app.get('/api/settings', (req, res) => {
+  res.json({ billingDay: settings.getBillingDay(), tariff: settings.getTariff() });
+});
+
+app.post('/api/settings', (req, res) => {
+  try {
+    res.json(settings.applySettings(req.body || {}));
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
 });
 
 app.post('/api/mode', (req, res) => {
@@ -113,6 +174,12 @@ app.post('/api/charge', async (req, res) => {
 
 app.get('/api/health', (req, res) => res.json({ ok: true, ts: Date.now() }));
 
+// Site location for the dashboard's client-side sunrise/sunset markers.
+app.get('/api/config', (req, res) => {
+  const w = config.weather || {};
+  res.json({ lat: w.lat ?? null, lon: w.lon ?? null });
+});
+
 // Charging events for Apple Shortcuts notifications.
 // /api/notify/pending DRAINS the queue (returns undelivered messages and clears them)
 // so a Shortcut automation can poll it and show a notification for each.
@@ -143,7 +210,7 @@ app.get('/api/tesla/login', (req, res) => {
 app.get('/api/tesla/callback', async (req, res) => {
   try {
     await teslaAuth.handleCallback(req.query.code, req.query.state);
-    res.redirect('/?tesla=connected');
+    res.redirect('/charger?tesla=connected');
   } catch (e) {
     res.status(400).send('Tesla authorization failed: ' + e.message);
   }
@@ -168,9 +235,131 @@ app.post('/api/tesla/exchange', async (req, res) => {
   }
 });
 
+// --- Home dashboard: cameras (Agent DVR) + smart plugs (Kasa) --------------
+
+app.get('/api/cameras', (req, res) => {
+  res.json({ enabled: cameras.enabled(), status: cameras.getStatus(), cameras: cameras.listCameras() });
+});
+
+// MJPEG proxy — lets phones on the LAN view Agent DVR streams through this
+// server (the browser hits us; we reach Agent DVR on localhost). The body is a
+// never-ending multipart stream, so disable client timeouts and pipe it through.
+app.get('/api/cameras/:oid/stream', async (req, res) => {
+  const cam = cameras.find(req.params.oid);
+  if (!cam) return res.status(404).end('unknown camera');
+  let upstream;
+  try {
+    upstream = await request(cameras.upstreamStreamUrl(cam.oid, req.query.size), {
+      headersTimeout: 0,
+      bodyTimeout: 0,
+    });
+  } catch (e) {
+    return res.status(502).end('camera unreachable: ' + (e.message || e));
+  }
+  if (upstream.statusCode >= 400) {
+    upstream.body.destroy();
+    return res.status(502).end('camera error HTTP ' + upstream.statusCode);
+  }
+  res.set('Content-Type', upstream.headers['content-type'] || 'multipart/x-mixed-replace');
+  res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
+  res.set('Connection', 'close');
+  upstream.body.on('error', () => res.end());
+  upstream.body.pipe(res);
+  req.on('close', () => { try { upstream.body.destroy(); } catch { /* already closed */ } });
+});
+
+// Single JPEG snapshot. The camera tiles poll this (instead of holding open MJPEG
+// streams) so we never exhaust the browser's ~6-connections-per-host limit — that
+// starvation is what blanks the fullscreen viewer and leaves tiles black. Uses
+// Agent DVR's native /grab.jpg; falls back to grabbing a frame from the MJPEG
+// stream if that endpoint isn't available on this build.
+app.get('/api/cameras/:oid/snapshot', async (req, res) => {
+  const cam = cameras.find(req.params.oid);
+  if (!cam) return res.status(404).end('unknown camera');
+  try {
+    const upstream = await request(cameras.upstreamSnapshotUrl(cam.oid, req.query.size), {
+      headersTimeout: 6000,
+      bodyTimeout: 6000,
+    });
+    if (upstream.statusCode < 400) {
+      res.set('Content-Type', upstream.headers['content-type'] || 'image/jpeg');
+      res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
+      return upstream.body.pipe(res);
+    }
+    upstream.body.destroy();
+  } catch { /* fall through to MJPEG frame grab */ }
+  try {
+    const frame = await grabFrame(cameras.upstreamStreamUrl(cam.oid, req.query.size));
+    res.set('Content-Type', 'image/jpeg');
+    res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.end(frame);
+  } catch (e) {
+    res.status(502).end('snapshot failed: ' + (e.message || e));
+  }
+});
+
+// Read an MJPEG multipart stream until one complete JPEG (SOI 0xFFD8 .. EOI 0xFFD9).
+async function grabFrame(url) {
+  const { body } = await request(url, { headersTimeout: 5000, bodyTimeout: 5000 });
+  let buf = Buffer.alloc(0);
+  try {
+    for await (const chunk of body) {
+      buf = Buffer.concat([buf, chunk]);
+      const start = buf.indexOf(Buffer.from([0xff, 0xd8]));
+      if (start === -1) {
+        if (buf.length > 2_000_000) throw new Error('no JPEG start found');
+        continue;
+      }
+      const end = buf.indexOf(Buffer.from([0xff, 0xd9]), start + 2);
+      if (end !== -1) return buf.subarray(start, end + 2);
+      if (buf.length > 8_000_000) throw new Error('frame too large');
+    }
+  } finally {
+    try { body.destroy(); } catch { /* already closed */ }
+  }
+  throw new Error('stream ended without a frame');
+}
+
+app.get('/api/kasa', (req, res) => {
+  res.json(kasa.getCached() || { enabled: kasa.enabled(), plugs: [] });
+});
+
+// Current conditions + multi-day forecast (Open-Meteo, no key). The home page
+// polls this every few minutes — it's too large to ride on the SSE state tick.
+app.get('/api/weather', (req, res) => {
+  const lat = Number(req.query.lat) || config.weather?.lat;
+  const lon = Number(req.query.lon) || config.weather?.lon;
+  res.json({ current: weather.getCached(lat, lon), forecast: weather.getForecast(lat, lon) });
+});
+
+app.post('/api/kasa/:key', async (req, res) => {
+  try {
+    const on = req.body?.on;
+    if (typeof on !== 'boolean') throw new Error('body { on: boolean } required');
+    const plug = await kasa.setState(req.params.key, on);
+    res.json({ ok: true, plug });
+  } catch (e) {
+    res.status(400).json({ ok: false, error: e.message });
+  }
+});
+
 // --- Static dashboard ------------------------------------------------------
 
-app.use(express.static(config.paths.public));
+// The home dashboard is now the main page; the Tesla/solar charger lives at
+// /charger (and /home still maps to home for old bookmarks).
+app.get(['/', '/home'], (req, res) => res.sendFile(path.join(config.paths.public, 'home.html')));
+app.get('/charger', (req, res) => res.sendFile(path.join(config.paths.public, 'index.html')));
+
+app.use(express.static(config.paths.public, {
+  index: false,
+  setHeaders: (res, filePath) => {
+    // The dashboard is installed to the iOS home screen (apple-mobile-web-app-
+    // capable) and cached in a standalone webview. Force revalidation of the
+    // HTML and its scripts so a deploy can't leave a stale index.html paired
+    // with a new app.js (or vice versa) — a mismatch throws and blanks the page.
+    if (/\.(html|js)$/i.test(filePath)) res.setHeader('Cache-Control', 'no-cache');
+  },
+}));
 
 // --- Boot ------------------------------------------------------------------
 

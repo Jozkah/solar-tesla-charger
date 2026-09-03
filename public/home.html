@@ -1,0 +1,327 @@
+<!DOCTYPE html>
+<html class="dark" lang="en">
+<head>
+<meta charset="utf-8" />
+<meta content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" name="viewport" />
+<meta name="theme-color" content="#050505" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<title>Home</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+<script>
+  tailwind.config = {
+    darkMode: 'class',
+    theme: { extend: {
+      colors: {
+        bg: '#050505', surface: '#0e0f12', mut: '#9a9aa2',
+        ios: { blue: '#0A84FF', green: '#30D158', amber: '#FFD60A', red: '#FF453A', gray: '#8E8E93' },
+      },
+      borderRadius: { '2xl': '22px', '3xl': '28px' },
+      fontFamily: { sans: ['Inter', '-apple-system', 'BlinkMacSystemFont', 'sans-serif'] },
+    } },
+  };
+</script>
+<style>
+  body { background:#050505; color:#f2f2f7; font-family:'Inter',-apple-system,BlinkMacSystemFont,sans-serif; -webkit-font-smoothing:antialiased; min-height:100dvh; overscroll-behavior-y:none; }
+  header { padding-top: env(safe-area-inset-top); }
+  /* Live power numbers dim while the server reports the meters stale. */
+  body.stale :is(#solar, #house, #car, #grid, #gridVal) { opacity:.45; }
+  /* Solid card (no backdrop-filter). Over the near-black background the blur was
+     barely visible, and removing it eliminates the Chromium scroll "streak" where
+     tiles smeared the fixed glow — the same fix already used for .chart-card. */
+  .glass { background:rgba(26,27,32,0.9); border:1px solid rgba(255,255,255,0.10); box-shadow: inset 0 1px 0 rgba(255,255,255,.12), 0 10px 30px rgba(0,0,0,.38); }
+  /* Solid card (no backdrop-filter) for the chart — avoids the Chromium backdrop
+     repaint streak that shows at the top edge when the hover tooltip updates. */
+  .chart-card { background:rgba(26,27,32,0.9); border:1px solid rgba(255,255,255,0.10); box-shadow: inset 0 1px 0 rgba(255,255,255,.12), 0 10px 30px rgba(0,0,0,.38); }
+  .tnum { font-variant-numeric:tabular-nums; }
+  .hairline-b { border-bottom:1px solid rgba(255,255,255,0.07); }
+  ::-webkit-scrollbar { display:none; }
+
+  /* Tailwind's display utilities (.flex etc.) outrank preflight's [hidden] rule,
+     so el.hidden alone would not hide an element that carries one. */
+  [hidden] { display:none !important; }
+
+  .seg { display:flex; gap:3px; padding:3px; background:rgba(120,120,128,0.16); border-radius:16px; border:1px solid rgba(255,255,255,0.06); box-shadow: inset 0 1px 0 rgba(255,255,255,.06); }
+  .seg button { flex:1; border:0; background:transparent; color:rgba(235,235,245,0.6); font-size:13px; font-weight:600; padding:8px 6px; border-radius:13px; transition:.2s cubic-bezier(.32,.72,0,1); cursor:pointer; }
+  .seg button.active { background:linear-gradient(180deg, rgba(255,255,255,.22), rgba(255,255,255,.10)); color:#fff; border:1px solid rgba(255,255,255,.14); box-shadow: inset 0 1px 0 rgba(255,255,255,.45), 0 2px 8px rgba(0,0,0,.40); }
+
+  .lg-btn { position:relative; border:0; border-radius:999px; font-weight:600; cursor:pointer; color:#f2f2f7; padding:8px 14px; font-size:13px; text-decoration:none; display:inline-flex; align-items:center; gap:5px;
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.40), inset 0 -1px 1px rgba(0,0,0,.22), 0 6px 18px rgba(0,0,0,.35); transition:transform .12s ease, filter .2s ease; }
+  .lg-btn:active { transform:scale(.97); filter:brightness(1.08); }
+  .lg-btn-soft { background:linear-gradient(180deg, rgba(255,255,255,.18), rgba(255,255,255,.06)); border:1px solid rgba(255,255,255,.14); }
+  .lg-btn-blue { background:linear-gradient(180deg, rgba(80,170,255,.34), rgba(10,132,255,.16)); border:1px solid rgba(10,132,255,.5); color:#eaf4ff; }
+  /* Used by the period-nav prev/next buttons; index.html defines this already, home.html didn't. */
+  .lg-btn-ghost { background:linear-gradient(180deg, rgba(255,255,255,.06), rgba(255,255,255,.02)); border:1px solid rgba(255,255,255,.08); color:#9a9aa2; box-shadow:inset 0 1px 0 rgba(255,255,255,.12); }
+
+  .sw { width:52px; height:31px; border-radius:999px; background:rgba(120,120,128,0.32); position:relative; transition:background .25s ease; cursor:pointer; flex:0 0 auto; border:1px solid rgba(255,255,255,.08); }
+  .sw.on { background:#30D158; }
+  .sw .knob { position:absolute; top:2px; left:2px; width:27px; height:27px; border-radius:50%; background:#fff; box-shadow:0 2px 6px rgba(0,0,0,.45); transition:left .25s cubic-bezier(.32,.72,0,1); }
+  .sw.on .knob { left:23px; }
+  .sw.busy { opacity:.55; pointer-events:none; }
+
+  /* power chart + hover tooltip */
+  .chart-box { position:relative; touch-action:none; }
+  #chart { width:100%; height:180px; display:block; }
+  .legdot { width:9px; height:9px; border-radius:3px; display:inline-block; }
+  .tooltip { position:absolute; pointer-events:none; background:rgba(10,11,15,.96); border:1px solid rgba(255,255,255,.1); border-radius:12px; padding:8px 10px; font-size:12px; box-shadow:0 8px 24px rgba(0,0,0,.5); transform:translateX(-50%); white-space:nowrap; z-index:5; top:4px; }
+  .tooltip .t-time { color:#9a9aa2; margin-bottom:4px; font-size:11px; opacity:.8; }
+  .tooltip .t-row { display:flex; align-items:center; gap:6px; }
+  .tooltip .t-row i { width:8px; height:8px; border-radius:2px; }
+
+  .cam { position:relative; aspect-ratio:16/9; border-radius:18px; overflow:hidden; background:#0c0d11; cursor:pointer; }
+  .cam img { width:100%; height:100%; object-fit:cover; display:block; }
+  .cam .err { position:absolute; inset:0; display:none; flex-direction:column; align-items:center; justify-content:center; gap:8px; color:#9a9aa2; font-size:12px; background:#0c0d11; }
+  .cam.failed img { opacity:0; }
+  .cam.failed .err { display:flex; }
+  @keyframes pulse-dot { 0%{box-shadow:0 0 0 0 rgba(48,209,88,.7)} 70%{box-shadow:0 0 0 6px rgba(48,209,88,0)} 100%{box-shadow:0 0 0 0 rgba(48,209,88,0)} }
+  .dot-live { animation:pulse-dot 2s infinite; }
+
+  .hscroll { display:flex; gap:8px; overflow-x:auto; padding-bottom:2px; scroll-snap-type:x proximity; }
+  .hcell { flex:0 0 auto; width:58px; text-align:center; scroll-snap-align:start; }
+
+  /* fullscreen camera viewer */
+  #viewer { position:fixed; inset:0; z-index:100; background:rgba(0,0,0,.93); display:none; align-items:center; justify-content:center; }
+  #viewer.open { display:flex; }
+  #viewer img { max-width:100vw; max-height:100vh; object-fit:contain; }
+  #viewer .close { position:absolute; top:calc(env(safe-area-inset-top) + 8px); right:18px; font-size:32px; color:#fff; cursor:pointer; line-height:1; }
+
+  /* forecast modal — centered, sticky header, scrollable body, bottom fade */
+  #wxModal { position:fixed; inset:0; z-index:100; background:rgba(0,0,0,.85); display:none; align-items:center; justify-content:center; padding:20px; }
+  #wxModal.open { display:flex; }
+  #wxModal .sheet { background:#0e0f12; border:1px solid rgba(255,255,255,.08); border-radius:24px; width:100%; max-width:520px; max-height:80vh; overflow:hidden; display:flex; flex-direction:column; position:relative; }
+  #wxModal .sheet-head { display:flex; align-items:center; justify-content:space-between; padding:20px 20px 12px; }
+  #wxModal .sheet-body { overflow-y:auto; padding:0 20px 28px; display:flex; flex-direction:column; gap:8px; }
+  /* fade + blur the last (overflowing) row at the bottom */
+  #wxModal .sheet::after { content:''; position:absolute; left:0; right:0; bottom:0; height:46px; pointer-events:none;
+    background:linear-gradient(to top, #0e0f12 30%, rgba(14,15,18,0)); -webkit-backdrop-filter:blur(2px); backdrop-filter:blur(2px);
+    border-bottom-left-radius:24px; border-bottom-right-radius:24px; }
+  .navlink { font-size:13px; font-weight:600; color:#9a9aa2; text-decoration:none; }
+  /* kill iOS rubber-band bounce (it reveals the fixed weather backdrop above the header).
+     bg goes on html only: an opaque body background would paint OVER the z-index:-30 image. */
+  html, body { overscroll-behavior-y:none; overscroll-behavior:none; }
+  html { background:#050505; }
+  body { background:transparent; }
+  #bgWeather { position:fixed; inset:0; z-index:-30; background-size:cover; background-position:center; opacity:0; transition:opacity 1.5s ease; pointer-events:none; }
+  #bgWeather.on { opacity:1; }
+</style>
+</head>
+<body class="pb-20 overflow-x-hidden">
+
+<!-- weather-reactive backdrop (images in bg/, optional) -->
+<div id="bgWeather" aria-hidden="true"></div>
+
+<div class="fixed inset-0 -z-10 opacity-20 pointer-events-none">
+  <div class="absolute -top-[10%] -left-[10%] w-[300px] h-[300px] bg-ios-green rounded-full blur-[120px]"></div>
+  <div class="absolute bottom-[20%] -right-[10%] w-[250px] h-[250px] bg-ios-blue rounded-full blur-[110px]"></div>
+</div>
+
+<header class="sticky top-0 z-50 bg-bg/80 backdrop-blur-xl border-b border-white/5" style="transform:translateZ(0)">
+  <div class="flex items-center justify-between px-5 pt-5 pb-3">
+    <h1 class="text-[26px] font-extrabold tracking-tight leading-none">Home</h1>
+    <div class="flex items-center gap-2.5">
+      <a href="/charger" class="lg-btn lg-btn-blue">⚡ Tesla</a>
+      <div id="conn" class="flex items-center gap-2 px-3 py-1.5 rounded-full bg-ios-green/15">
+        <span id="connDot" class="w-2 h-2 rounded-full bg-ios-green dot-live"></span>
+        <span id="connText" class="text-ios-green text-xs font-semibold">live</span>
+      </div>
+    </div>
+  </div>
+</header>
+
+<main class="px-5 pt-5 flex flex-col gap-6 max-w-[720px] mx-auto">
+
+  <!-- Stale meters / history recovery notice (server-driven, see renderStale) -->
+  <section id="staleBanner" class="text-amber-200 text-[13px] rounded-2xl px-4 py-3" style="background:rgba(120,70,30,.35);border:1px solid rgba(180,100,50,.4)" hidden></section>
+
+  <!-- Settings (tariff & billing) -->
+  <div class="flex justify-end -mb-2">
+    <button id="settingsToggle" class="lg-btn lg-btn-ghost px-3 py-1 text-[12px]">⚙ Tariff &amp; billing</button>
+  </div>
+  <div id="settingsPanel" class="glass rounded-2xl p-3.5 flex flex-col gap-3" hidden>
+    <div class="grid grid-cols-2 gap-3">
+      <label class="flex flex-col gap-1"><span class="text-[10px] text-mut uppercase">Billing day</span>
+        <input id="setBillingDay" type="number" min="1" max="31" class="px-2 py-1.5 rounded-xl text-[14px] tnum" style="background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.12);color:#f2f2f7" /></label>
+      <label class="flex flex-col gap-1"><span class="text-[10px] text-mut uppercase">Currency</span>
+        <input id="setCurrency" type="text" maxlength="8" class="px-2 py-1.5 rounded-xl text-[14px]" style="background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.12);color:#f2f2f7" /></label>
+    </div>
+    <div class="text-[10px] text-mut uppercase">Bands — rate (per kWh) &amp; hours (e.g. 0-8,22-24)</div>
+    <div id="tariffBands" class="flex flex-col gap-2"></div>
+    <div class="grid grid-cols-2 gap-3">
+      <label class="flex flex-col gap-1"><span class="text-[10px] text-mut uppercase">Daily fixed</span>
+        <input id="setDailyFixed" type="number" step="0.0001" class="px-2 py-1.5 rounded-xl text-[14px] tnum" style="background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.12);color:#f2f2f7" /></label>
+      <label class="flex flex-col gap-1"><span class="text-[10px] text-mut uppercase">Per-kWh levy</span>
+        <input id="setLevy" type="number" step="0.0001" class="px-2 py-1.5 rounded-xl text-[14px] tnum" style="background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.12);color:#f2f2f7" /></label>
+      <label class="flex flex-col gap-1"><span class="text-[10px] text-mut uppercase">Fixed monthly</span>
+        <input id="setFixedMonthly" type="number" step="0.01" class="px-2 py-1.5 rounded-xl text-[14px] tnum" style="background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.12);color:#f2f2f7" /></label>
+      <label class="flex flex-col gap-1"><span class="text-[10px] text-mut uppercase">VAT %</span>
+        <input id="setVat" type="number" step="0.1" min="0" max="100" class="px-2 py-1.5 rounded-xl text-[14px] tnum" style="background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.12);color:#f2f2f7" /></label>
+    </div>
+    <div id="settingsError" class="text-[11px]" style="color:#FF453A" hidden></div>
+    <button id="settingsSave" class="lg-btn px-4 py-2 text-[13px] self-start">Save</button>
+  </div>
+
+  <!-- Energy summary -->
+  <section>
+    <h2 class="text-[13px] font-bold tracking-widest text-mut mb-2.5 px-1">ENERGY</h2>
+    <div class="grid grid-cols-3 sm:grid-cols-5 gap-3">
+      <div class="glass rounded-2xl p-4 flex flex-col gap-1.5">
+        <div class="flex justify-between items-center"><span id="ic-solar" class="text-ios-amber"></span><span class="text-mut text-[11px] font-semibold tracking-wider">SOLAR</span></div>
+        <span class="text-[22px] font-bold tnum"><span id="solar">–</span><span class="text-sm font-normal text-mut ml-0.5">kW</span></span>
+        <span id="solarSub" class="text-[11px] text-mut">&nbsp;</span>
+      </div>
+      <div class="glass rounded-2xl p-4 flex flex-col gap-1.5">
+        <div class="flex justify-between items-center"><span id="ic-house" class="text-ios-green"></span><span class="text-mut text-[11px] font-semibold tracking-wider">HOUSE</span></div>
+        <span class="text-[22px] font-bold tnum"><span id="house">–</span><span class="text-sm font-normal text-mut ml-0.5">kW</span></span>
+      </div>
+      <div class="glass rounded-2xl p-4 flex flex-col gap-1.5">
+        <div class="flex justify-between items-center"><span id="ic-car" class="text-ios-blue"></span><span class="text-mut text-[11px] font-semibold tracking-wider">CAR</span></div>
+        <span class="text-[22px] font-bold tnum"><span id="car">–</span><span class="text-sm font-normal text-mut ml-0.5">kW</span></span>
+      </div>
+      <div class="glass rounded-2xl p-4 flex flex-col gap-1.5">
+        <div class="flex justify-between items-center"><span id="gridLabel" class="text-mut text-[11px] font-semibold tracking-wider">GRID</span></div>
+        <span id="gridVal" class="text-[22px] font-bold tnum"><span id="grid">–</span><span class="text-sm font-normal text-mut ml-0.5">W</span></span>
+      </div>
+      <div class="glass rounded-2xl p-4 flex flex-col gap-1.5">
+        <div class="flex justify-between items-center"><span class="text-mut text-[11px] font-semibold tracking-wider">GRID V · PF</span></div>
+        <span class="text-[22px] font-bold tnum"><span id="volt">–</span><span class="text-sm font-normal text-mut ml-0.5">V</span></span>
+        <span id="pfSub" class="text-[11px] text-mut">&nbsp;</span>
+      </div>
+    </div>
+    <div class="seg mt-4 mb-2" id="homeRangeSeg">
+      <button data-range="day" class="active">Day</button>
+      <button data-range="week">Week</button>
+      <button data-range="month">Month</button>
+      <button data-range="billing">Billing</button>
+    </div>
+    <div id="homePeriodNav" class="flex justify-between items-center px-1 mb-2" hidden>
+      <button id="homePeriodPrev" class="lg-btn lg-btn-ghost px-4 py-1.5 text-[15px]">‹</button>
+      <span id="homePeriodLabel" class="text-[13px] font-semibold"></span>
+      <button id="homePeriodNext" class="lg-btn lg-btn-ghost px-4 py-1.5 text-[15px]">›</button>
+    </div>
+    <div class="grid grid-cols-3 sm:grid-cols-6 gap-3">
+      <div class="glass rounded-2xl p-3.5 flex flex-col gap-1">
+        <span class="text-mut text-[10px] font-semibold tracking-wider">SOLAR GEN</span>
+        <span class="text-[17px] font-bold tnum text-ios-amber"><span id="stSolarGen">–</span><span class="text-[11px] font-normal text-mut ml-0.5">kWh</span></span>
+      </div>
+      <div class="glass rounded-2xl p-3.5 flex flex-col gap-1">
+        <span class="text-mut text-[10px] font-semibold tracking-wider">SOLAR USED</span>
+        <span class="text-[17px] font-bold tnum" style="color:#FF9F0A"><span id="stSolarUsed">–</span><span class="text-[11px] font-normal text-mut ml-0.5">kWh</span></span>
+      </div>
+      <div class="glass rounded-2xl p-3.5 flex flex-col gap-1">
+        <span class="text-mut text-[10px] font-semibold tracking-wider">EXPORTED</span>
+        <span class="text-[17px] font-bold tnum text-ios-green"><span id="stExported">–</span><span class="text-[11px] font-normal text-mut ml-0.5">kWh</span></span>
+      </div>
+      <div class="glass rounded-2xl p-3.5 flex flex-col gap-1">
+        <span class="text-mut text-[10px] font-semibold tracking-wider">IMPORTED</span>
+        <span class="text-[17px] font-bold tnum text-ios-red"><span id="stImported">–</span><span class="text-[11px] font-normal text-mut ml-0.5">kWh</span></span>
+      </div>
+      <div class="glass rounded-2xl p-3.5 flex flex-col gap-1">
+        <span class="text-mut text-[10px] font-semibold tracking-wider">HOUSE USED</span>
+        <span class="text-[17px] font-bold tnum"><span id="stHouseUsed">–</span><span class="text-[11px] font-normal text-mut ml-0.5">kWh</span></span>
+      </div>
+      <div class="glass rounded-2xl p-3.5 flex flex-col gap-1">
+        <span class="text-mut text-[10px] font-semibold tracking-wider">COST</span>
+        <span class="text-[17px] font-bold tnum"><span id="stCost">–</span><span id="stCostCur" class="text-[11px] font-normal text-mut ml-0.5">€</span></span>
+      </div>
+    </div>
+  </section>
+
+  <!-- Power graph -->
+  <section class="chart-card rounded-3xl p-4 flex flex-col gap-3">
+    <div class="flex justify-between items-center">
+      <span class="text-mut text-[11px] font-semibold tracking-widest">POWER</span>
+      <span class="text-[11px] flex items-center">
+        <i class="inline-block w-2.5 h-2.5 rounded-sm mr-1" style="background:#FFD60A"></i><span class="text-mut mr-3">solar</span>
+        <i class="inline-block w-2.5 h-2.5 rounded-sm mr-1" style="background:#bf5af2"></i><span class="text-mut mr-3">house</span>
+        <i class="inline-block w-2.5 h-2.5 rounded-sm mr-1" style="background:#60a5fa"></i><span class="text-mut mr-3">car</span>
+        <i class="inline-block w-2.5 h-2.5 rounded-sm mr-1" style="background:#30D158"></i><span class="text-mut mr-3">export</span>
+        <i class="inline-block w-2.5 h-2.5 rounded-sm mr-1" style="background:#FF453A"></i><span class="text-mut">import</span>
+      </span>
+    </div>
+    <div class="seg" id="rangeSeg">
+      <button data-h="1" class="active">1h</button>
+      <button data-h="6">6h</button>
+      <button data-h="24">24h</button>
+      <button data-h="168">7d</button>
+    </div>
+    <div class="chart-box">
+      <canvas id="chart"></canvas>
+      <div id="chartTip" class="tooltip" hidden></div>
+      <div id="chartEmpty" class="text-mut text-[12px] text-center py-12" hidden>No data yet.</div>
+    </div>
+  </section>
+
+  <!-- House distribution (per-circuit live meters) -->
+  <section id="houseSection" class="glass rounded-3xl overflow-hidden">
+    <div class="px-5 py-4 hairline-b">
+      <h3 class="text-[17px] font-semibold">House</h3>
+    </div>
+    <div class="px-5">
+      <div class="grid grid-cols-6 py-2.5 text-[10px] font-semibold text-mut tracking-wider uppercase hairline-b">
+        <div class="col-span-2">Circuit</div>
+        <div class="text-right">W</div><div class="text-right">V</div><div class="text-right">A</div><div class="text-right">PF</div>
+      </div>
+      <div id="metersBody"></div>
+    </div>
+  </section>
+
+  <!-- Weather -->
+  <section id="weatherSection">
+    <div class="flex items-center justify-between mb-2.5 px-1">
+      <h2 class="text-[13px] font-bold tracking-widest text-mut">WEATHER</h2>
+      <button id="wxMore" class="text-[12px] font-semibold text-ios-blue">14-day ›</button>
+    </div>
+    <div class="glass rounded-3xl p-4 flex flex-col gap-4 cursor-pointer" id="wxCard">
+      <div class="flex items-center gap-4">
+        <div class="text-[44px] leading-none" id="wxIcon">·</div>
+        <div class="flex-1">
+          <div class="text-[30px] font-bold tnum leading-none"><span id="wxTemp">–</span>°</div>
+          <div class="text-[13px] text-mut" id="wxText">—</div>
+        </div>
+        <div class="text-right text-[12px] text-mut leading-relaxed" id="wxMeta"></div>
+      </div>
+      <div class="hscroll" id="wxHourly"></div>
+      <div class="grid grid-cols-4 sm:grid-cols-7 gap-2" id="wxDaily"></div>
+    </div>
+  </section>
+
+  <!-- Cameras -->
+  <section id="camsSection">
+    <div class="flex items-center justify-between mb-2.5 px-1">
+      <h2 class="text-[13px] font-bold tracking-widest text-mut">CAMERAS</h2>
+      <span id="camStatus" class="text-[11px] text-mut"></span>
+    </div>
+    <div id="cams" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+      <div class="glass rounded-2xl p-4 text-mut text-sm">Loading cameras…</div>
+    </div>
+  </section>
+
+  <!-- Smart plugs -->
+  <section id="plugsSection">
+    <h2 class="text-[13px] font-bold tracking-widest text-mut mb-2.5 px-1">SMART PLUGS</h2>
+    <div id="plugs" class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+      <div class="glass rounded-2xl p-4 text-mut text-sm">Loading plugs…</div>
+    </div>
+  </section>
+
+</main>
+
+<!-- Fullscreen camera viewer (live MJPEG stream) -->
+<div id="viewer"><span class="close" id="viewerClose">×</span><img id="viewerImg" alt="" /></div>
+
+<!-- Extended forecast modal -->
+<div id="wxModal">
+  <div class="sheet">
+    <div class="sheet-head">
+      <h3 class="text-lg font-bold">14-day forecast</h3>
+      <span id="wxModalClose" class="text-2xl text-mut cursor-pointer leading-none">×</span>
+    </div>
+    <div id="wxModalList" class="sheet-body"></div>
+  </div>
+</div>
+
+<script src="/period-nav.js"></script>
+<script src="home.js"></script>
+</body>
+</html>

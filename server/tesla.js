@@ -44,7 +44,7 @@ function normalize(cs = {}, stateHint) {
     chargerPower: num(cs.charger_power), // kW
     batteryLevel: num(cs.battery_level ?? cs.usable_battery_level),
     chargeLimitSoc: num(cs.charge_limit_soc),
-    timeToFull: num(cs.time_to_full_charge), // hours to reach charge_limit_soc (matches the Tesla app's estimate)
+    timeToFullCharge: num(cs.time_to_full_charge),
     raw: cs,
   };
 }
@@ -195,7 +195,7 @@ function mi2km(mi) { return mi == null ? null : Math.round(mi * 1.60934 * 10) / 
 async function peek(res) { try { return await res.clone().text(); } catch { return ''; } }
 
 // Tesla returns result:false with a harmless reason for idempotent no-ops — e.g.
-// charge_start while the car is already charging, or charge_stop while it's already
+// charge_start while the car is already charging, or charge_stop while already
 // stopped. Treat those as success so they don't surface as command errors.
 const BENIGN_CMD_REASONS = new Set(['is_charging', 'not_charging', 'complete', 'already_set']);
 function commandFailed(res, json) {
@@ -205,7 +205,6 @@ function commandFailed(res, json) {
   }
   return false;
 }
-
 async function proxyCommand(command, payload) {
   if (config.control.dryRun) return { dryRun: true, command, payload };
   const url = `${t.proxyBaseUrl}/api/1/vehicles/${t.vin}/command/${command}`;

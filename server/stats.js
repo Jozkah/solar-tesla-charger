@@ -1,6 +1,18 @@
 // Derives the dashboard statistics from the SQLite sample/session history.
-import { queries, currentSession } from './db.js';
+import { queries, currentSession, saveDayRollup, readDayRollup } from './db.js';
 import config from './config.js';
+import {
+  computeDayRollup, foldRollups, nextDayMs, isDayComplete, shouldPersistDay, walkStartMs,
+  startOfDayMs, floorKnownStart,
+} from './rollup.js';
+import { getBillingDay, getTariff } from './settings.js';
+import { hourBandMap, foldHoursToBands, computeCost, computeChargeCost } from './cost.js';
+import { withGaps } from './series.js';
+
+// periodBounds now lives in period.js (pure, billing-aware). Re-exported so the
+// previous public API (used by tests / callers) is preserved.
+export { periodBounds } from './period.js';
+import { periodBounds } from './period.js';
 
 function startOfTodayMs() {
   const d = new Date();
@@ -8,54 +20,140 @@ function startOfTodayMs() {
   return d.getTime();
 }
 
-// [since, until) bounds for a calendar period, `offset` periods back from the
-// current one (offset 0 = today / this week / this month). Weeks start Monday.
-export function periodBounds(range, offset = 0) {
-  const d = new Date();
-  d.setHours(0, 0, 0, 0);
-  if (range === 'day') {
-    d.setDate(d.getDate() - offset);
-    const since = d.getTime();
-    d.setDate(d.getDate() + 1);
-    return { since, until: d.getTime() };
-  }
-  if (range === 'week') {
-    const dow = (d.getDay() + 6) % 7; // Monday = 0
-    d.setDate(d.getDate() - dow - offset * 7);
-    const since = d.getTime();
-    d.setDate(d.getDate() + 7);
-    return { since, until: d.getTime() };
-  }
-  if (range === 'month') {
-    d.setDate(1);
-    d.setMonth(d.getMonth() - offset);
-    const since = d.getTime();
-    d.setMonth(d.getMonth() + 1);
-    return { since, until: d.getTime() };
-  }
-  return null;
+// The calendar day of the earliest SURVIVING sample, or Infinity if the
+// database is empty. Answers "may we PERSIST this day?" — a day must have
+// samples we can actually compute from to freeze a rollup. Every real day is
+// < Infinity, so shouldPersistDay's `dayStart < historyStart` check correctly
+// refuses to persist anything. Do NOT use this to decide how far back to WALK
+// a range (see knownStartMs) — samples get pruned but daily_stats rows don't,
+// so this alone would skip days whose only surviving record is a stored rollup.
+function historyStartMs() {
+  const firstTs = queries.firstSampleTs.get()?.ts ?? null;
+  return firstTs == null ? Infinity : startOfDayMs(firstTs);
 }
 
-// Integrate a signed power column (W) over a list of time-ordered samples -> Wh.
-// Only counts the positive part when `positiveOnly`, else the whole signed value.
-function integrate(rows, pick, { positiveOnly = false } = {}) {
-  let wh = 0;
-  for (let i = 1; i < rows.length; i++) {
-    const dtH = (rows[i].ts - rows[i - 1].ts) / 3_600_000;
-    if (dtH <= 0 || dtH > 0.5) continue; // skip gaps
-    let w = pick(rows[i - 1]);
-    if (w == null) continue;
-    if (positiveOnly) w = Math.max(0, w);
-    wh += w * dtH;
+// The calendar day of the earliest thing we KNOW about — a stored daily_stats
+// row (whose backing samples may already be pruned) or the earliest surviving
+// sample, whichever is older. Infinity if the database is entirely empty.
+// Answers "how far back do we know anything?" — this is the correct bound for
+// walking a range (rollupRange), because daily_stats outlives the sample
+// prune and must never be silently skipped. Floored via floorKnownStart so a
+// stray pre-history daily_stats row (restore-from-backup, clock skew, manual
+// insert) can't drag every walk back to it — see rollup.js for why that
+// matters (shouldPersistDay never lets such a row's cache heal itself).
+function knownStartMs() {
+  const firstRollup = queries.firstRollupDay.get()?.day_ts ?? null;
+  const firstSample = queries.firstSampleTs.get()?.ts ?? null;
+  const starts = [firstRollup, firstSample == null ? null : startOfDayMs(firstSample)]
+    .filter((v) => v != null);
+  const rawStart = starts.length ? Math.min(...starts) : Infinity;
+  return floorKnownStart(rawStart, Date.now());
+}
+
+function retentionStartMs() {
+  return Date.now() - config.db.sampleRetentionDays * 86_400_000;
+}
+
+// One day's rollup: stored rows for eligible completed days, live compute
+// otherwise. A persisted rollup is immutable and kept forever — this is what
+// makes week/month/all cheap. `historyStart`/`retentionStart` are passed in
+// (computed once per call by the caller, never per day) so this never runs an
+// extra query inside a day-by-day loop.
+function dayRollup(dayStart, historyStart, retentionStart) {
+  const dayEnd = nextDayMs(dayStart);
+  const now = Date.now();
+  // A complete day's stored row must always be trusted on read, independent of
+  // whether it would be (re-)eligible for persist right now: a day rolled up
+  // while still inside the retention window stays true forever even after its
+  // samples fall out of retention and get pruned. Gating the read behind
+  // `persist` (as before) made such days silently recompute to zero once their
+  // samples were gone — this is the fix for that.
+  if (isDayComplete(dayStart, now)) {
+    const hit = readDayRollup(dayStart);
+    // Trust a stored complete day UNLESS it predates the per-hour histogram
+    // columns (import_wh_by_hour === null for a legacy rollup) AND its samples
+    // are still within retention to backfill from — then fall through to
+    // recompute+repersist ONCE, so time-of-use cost isn't permanently zero for
+    // days rolled up before this feature. Beyond retention (samples pruned) the
+    // stored row is kept as-is; its histograms stay zero, unavoidable.
+    if (hit && (hit.import_wh_by_hour != null || dayStart < retentionStart)) return hit;
   }
-  return wh;
+  const persist = shouldPersistDay(dayStart, now, historyStart, retentionStart);
+  const before = queries.sampleBefore.get(dayStart);   // last charging sample; seeds prevAmps
+  const after = queries.sampleAtOrAfter.get(dayEnd);   // closes the last interval
+  const rows = [
+    ...(before ? [before] : []),
+    ...queries.samplesBetween.all(dayStart, dayEnd),
+    ...(after ? [after] : []),
+  ];
+  const r = computeDayRollup(rows, dayStart, dayEnd);
+  // A day that fails shouldPersistDay (still running, before real history, or
+  // straddling the retention cutoff) still computes correctly above — it's
+  // just never written to daily_stats, so it can't freeze a wrong value.
+  if (persist) saveDayRollup(r);
+  return r;
+}
+
+// Fold every day in [since, until) — the calendar ranges. Days before anything
+// we know about are never walked individually: they compute to zero rollups
+// anyway (no samples, no stored row), and folding nothing is equivalent to
+// folding zeros. This is what stops an ancient `offset` from walking thousands
+// of pre-history days. Uses knownStart (not historyStart) so a day whose
+// samples were pruned but whose daily_stats row survives is still walked —
+// see knownStartMs and rollup.js's walkStartMs for why.
+function rollupRange(since, until) {
+  const knownStart = knownStartMs();
+  const historyStart = historyStartMs();
+  const retentionStart = retentionStartMs();
+  const walkSince = walkStartMs(since, until, knownStart);
+  const days = [];
+  for (let d = walkSince; d < until; d = nextDayMs(d)) days.push(dayRollup(d, historyStart, retentionStart));
+  return foldRollups(days);
+}
+
+// 'all' spans from the earliest thing we know about — a stored rollup (whose
+// samples may already be pruned) or the oldest surviving sample, whichever is
+// older — through today. Going day-by-day rather than reading only the stored
+// rollups matters: a day that was never viewed has no row yet, and folding
+// only stored rows would silently drop it.
+function allTimeTotals() {
+  const knownStart = knownStartMs();
+  if (knownStart === Infinity) return foldRollups([]); // empty database
+  return rollupRange(knownStart, nextDayMs(startOfTodayMs()));
+}
+
+// Boot warm-up cursor: which day warmNextRollupDay looks at next. Module-level
+// so repeated setImmediate calls resume where the last one left off; lost on
+// restart, which is harmless — the next boot just starts the scan over, and
+// already-persisted days are skipped almost for free (a single indexed read).
+let warmCursor = null;
+
+// Compute+persist (or cheaply skip, if already stored) exactly one day's
+// rollup, advancing the cursor. Called from controller.js's boot warm-up via
+// setImmediate, one day per tick, so the synchronous DB work (~25ms/day worst
+// case) never blocks the live/control loops or the SSE feed for more than one
+// day at a stretch. Returns true if there's more to warm, false when the
+// cursor has reached today (nothing further to do this run).
+export function warmNextRollupDay() {
+  const historyStart = historyStartMs();
+  if (historyStart === Infinity) return false; // empty database — nothing to warm
+  const today = startOfTodayMs();
+  if (warmCursor == null || warmCursor < historyStart) warmCursor = historyStart;
+  if (warmCursor >= today) return false; // reached today — done for this run
+  const day = warmCursor;
+  warmCursor = nextDayMs(warmCursor);
+  // dayRollup() itself returns the cached row immediately when one already
+  // exists (see the `persist` cache-hit check above), so an already-warmed day
+  // costs one indexed lookup here, not a re-computation.
+  dayRollup(day, historyStart, retentionStartMs());
+  return true;
 }
 
 export function getStats(range = 'today', offset = 0) {
   const now = Date.now();
   let since;
   let until = null; // null = open-ended (up to now)
-  const bounds = periodBounds(range, offset);
+  const bounds = periodBounds(range, offset, getBillingDay(), now);
   if (bounds) ({ since, until } = bounds);
   else if (range === 'all') since = 0;
   else if (range === 'session') {
@@ -63,65 +161,67 @@ export function getStats(range = 'today', offset = 0) {
     since = s ? s.started_at : now - 3_600_000;
   } else since = startOfTodayMs();
 
-  const rows = until != null ? queries.samplesBetween.all(since, until) : queries.samplesSince.all(since);
   const peakAll = queries.peakAllTime.get() || {};
 
-  // Energy figures from sample integration (robust even without session rows).
-  const carWh = integrate(rows, (r) => r.charge_w, { positiveOnly: true });
-  const solar2Wh = integrate(rows, (r) => -Math.min(0, r.solar2_w || 0)); // solar generates negative
-  const exportWh = integrate(rows, (r) => r.export_w, { positiveOnly: true });
-  const importWh = integrate(rows, (r) => r.import_w, { positiveOnly: true });
-
-  // Solar vs grid share of what went into the car.
-  let carSolarWh = 0;
-  let carGridWh = 0;
-  for (let i = 1; i < rows.length; i++) {
-    const dtH = (rows[i].ts - rows[i - 1].ts) / 3_600_000;
-    if (dtH <= 0 || dtH > 0.5) continue;
-    const r = rows[i - 1];
-    const cw = Math.max(0, r.charge_w || 0);
-    if (cw <= 0) continue;
-    const gridShare = (r.import_w || 0) > 0 ? Math.min(r.import_w, cw) : 0;
-    carGridWh += gridShare * dtH;
-    carSolarWh += (cw - gridShare) * dtH;
+  // Calendar ranges fold immutable per-day rollups; session/today stay live.
+  let t;
+  let sampleCount;
+  if (bounds) {
+    t = rollupRange(since, Math.min(until, nextDayMs(startOfTodayMs())));
+    sampleCount = t.samples;
+  } else if (range === 'all') {
+    // Every day we have any record of. Rollups outlive the sample prune, so
+    // 'all' now covers more than the sampleRetentionDays window the samples
+    // table holds — but it must also include sample days never rolled up yet,
+    // or a day nobody happened to view would vanish from the total.
+    t = allTimeTotals();
+    sampleCount = t.samples;
+  } else {
+    const rows = queries.samplesSince.all(since);
+    t = computeDayRollup(rows, since, now + 1);
+    sampleCount = rows.length;
   }
 
+  // Estimated grid-import cost + marginal car-charging cost, derived from the
+  // folded per-hour histograms. Bands are applied HERE (read time), so editing
+  // tariff windows re-buckets stored history without any re-integration.
+  let cost = null;
+  let chargeCost = null;
+  const importByHour = t.import_wh_by_hour; // 24-length Wh array (zeros for legacy rows)
+  if (importByHour) {
+    const tariff = getTariff();
+    const map = hourBandMap(tariff.bands);
+    const bandKwh = foldHoursToBands(importByHour, map, tariff.bands.length);
+    // Daily fixed charge must reflect real elapsed days of data, never epoch:
+    // open-ended ranges (all/session/today) measure from the earliest day we
+    // know anything about, not since=0.
+    const windowEnd = until != null ? Math.min(now, until) : now;
+    const windowStart = until != null ? since : Math.max(since, knownStartMs());
+    const elapsedDays = Math.max(0, (windowEnd - windowStart) / 86_400_000);
+    cost = computeCost({ bandKwh, tariff, elapsedDays });
+    const carGridKwh = foldHoursToBands(t.car_grid_wh_by_hour || new Array(24).fill(0), map, tariff.bands.length);
+    chargeCost = computeChargeCost({ carGridKwhByBand: carGridKwh, tariff });
+  }
+
+  const carWh = t.car_wh;
+  const carSolarWh = t.car_solar_wh;
+  const carGridWh = t.car_grid_wh;
+  const exportWh = t.export_wh;
+  const importWh = t.import_wh;
+  const solar2Wh = t.solar2_wh;
+  const solaxWh = t.solax_wh;
+  const usedWh = t.used_wh;
   // Total solar generation = Growatt clamp (generation is negative) + SolaX cloud.
   // Deliberately NOT floored by the energy balance the way the live dashboard tile
   // is: solax_w is a cloud reading minutes behind the live grid/charge columns, so
   // per-sample max(measured, balance) would grab each ramp peak without the
   // matching trough and bias the total up (~+7% over the June history). The floor
   // fixes an instantaneous display; an energy total has to stay measured.
-  const solaxWh = integrate(rows, (r) => Math.max(0, r.solax_w || 0));
   const solarGenWh = solar2Wh + solaxWh;
-
-  // Estimated whole-home consumption via energy balance at the grid meter:
-  //   consumption = total_generation + grid_power   (grid_power: + import, - export)
-  // Both arrays sit behind the main grid meter, so this nets out correctly.
-  let usedWh = 0;
-  for (let i = 1; i < rows.length; i++) {
-    const dtH = (rows[i].ts - rows[i - 1].ts) / 3_600_000;
-    if (dtH <= 0 || dtH > 0.5) continue;
-    const r = rows[i - 1];
-    const gen = -Math.min(0, r.solar2_w || 0) + Math.max(0, r.solax_w || 0);
-    const cons = Math.max(0, gen + (r.grid_power || 0));
-    usedWh += cons * dtH;
-  }
-
-  // Peaks within range.
-  let peakW = 0;
-  let peakAmps = 0;
-  let chargingSamples = 0;
-  let adjustments = 0;
-  let prevAmps = null;
-  for (const r of rows) {
-    if ((r.charge_w || 0) > peakW) peakW = r.charge_w;
-    if ((r.charge_amps || 0) > peakAmps) peakAmps = r.charge_amps;
-    if (r.charging) chargingSamples++;
-    if (r.charging && prevAmps != null && r.charge_amps != null && r.charge_amps !== prevAmps) adjustments++;
-    if (r.charging) prevAmps = r.charge_amps;
-  }
-  const chargingMinutes = Math.round(chargingSamples * config.control.pollIntervalSec / 60);
+  const peakW = t.peak_w;
+  const peakAmps = t.peak_amps;
+  const chargingMinutes = Math.round(t.charging_samples * config.control.pollIntervalSec / 60);
+  const adjustments = t.adjustments;
 
   const session = currentSession();
 
@@ -131,7 +231,9 @@ export function getStats(range = 'today', offset = 0) {
     since,
     until,
     now,
-    samples: rows.length,
+    cost,
+    chargeCost,
+    samples: sampleCount,
     car: {
       energyWh: round0(carWh),
       solarWh: round0(carSolarWh),
@@ -184,15 +286,17 @@ export function getSeries(hours = 1) {
       chargeW: r.charge_w,
       solar2W: r.solar2_w,
       floor1W: r.floor1_w,
+      floor2W: r.floor2_w,
       solaxW: r.solax_w,
       chargeAmps: r.charge_amps,
     });
   }
-  return out;
+  // Mark holes (an outage with no rows) so the charts break the line there.
+  return withGaps(out);
 }
 
 function round0(n) {
   return n == null ? 0 : Math.round(n);
 }
 
-export default { getStats, getSeries };
+export default { getStats, getSeries, warmNextRollupDay };

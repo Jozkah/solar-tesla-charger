@@ -14,14 +14,32 @@ function readJson(file) {
   return JSON.parse(raw);
 }
 
-const fileConfig = readJson(path.join(ROOT, 'config.json'));
+// CONFIG_PATH lets tests point at a throwaway config.json (server/db.js opens
+// SQLite at import time from config.paths.db, so nothing DB-touching is
+// importable from a test without this). Deliberately NOT a fallback for a
+// missing config.json — if it's absent, readJson must still throw. A car
+// controller silently booting on example values would be far worse than a
+// crash at startup.
+const configPath = process.env.CONFIG_PATH ? path.resolve(process.env.CONFIG_PATH) : path.join(ROOT, 'config.json');
+const fileConfig = readJson(configPath);
 
 export const config = {
   ...fileConfig,
+  server: {
+    ...(fileConfig.server || {}),
+    port: Number(process.env.PORT) || fileConfig.server?.port || 3000,
+    host: process.env.HOST || fileConfig.server?.host || '0.0.0.0',
+  },
+  control: {
+    ...fileConfig.control,
+    // DRY_RUN=1 forces no-command mode (safe for running a second/test instance
+    // alongside the live one — it won't send conflicting Tesla charge commands).
+    dryRun: process.env.DRY_RUN === '1' ? true : fileConfig.control.dryRun,
+  },
   paths: {
     root: ROOT,
     public: path.join(ROOT, 'public'),
-    db: path.resolve(ROOT, fileConfig.db.path),
+    db: process.env.DB_PATH ? path.resolve(process.env.DB_PATH) : path.resolve(ROOT, fileConfig.db.path),
   },
   tesla: {
     ...fileConfig.tesla,
@@ -56,12 +74,56 @@ export const config = {
     tokenId: process.env.SOLAX_TOKEN_ID || '',
     wifiSn: process.env.SOLAX_WIFI_SN || '',
   },
+  // Home location for the weather forecast. Kept OUT of the tracked config.json
+  // (it's your home address) — set WEATHER_LAT / WEATHER_LON in .env. Falls back
+  // to the car's GPS location when unset.
+  weather: {
+    ...(fileConfig.weather || {}),
+    lat: process.env.WEATHER_LAT ? Number(process.env.WEATHER_LAT) : fileConfig.weather?.lat ?? null,
+    lon: process.env.WEATHER_LON ? Number(process.env.WEATHER_LON) : fileConfig.weather?.lon ?? null,
+  },
   notify: {
     ...(fileConfig.notify || {}),
     channel: process.env.NOTIFY_CHANNEL || fileConfig.notify?.channel || 'auto',
     ntfy: { server: process.env.NTFY_SERVER || 'https://ntfy.sh', topic: process.env.NTFY_TOPIC || '', token: process.env.NTFY_TOKEN || '' },
     pushover: { token: process.env.PUSHOVER_TOKEN || '', user: process.env.PUSHOVER_USER || '' },
     telegram: { token: process.env.TELEGRAM_BOT_TOKEN || '', chatId: process.env.TELEGRAM_CHAT_ID || '' },
+  },
+  // Home dashboard: Agent DVR cameras. Credentials may live in .env instead of
+  // config.json (they end up in URLs server-side only — never sent to the browser).
+  cameras: {
+    ...(fileConfig.cameras || {}),
+    host: process.env.CAMERAS_HOST || fileConfig.cameras?.host || 'http://localhost:8090',
+    auth: {
+      user: process.env.CAMERAS_USER || fileConfig.cameras?.auth?.user || '',
+      pass: process.env.CAMERAS_PASS || fileConfig.cameras?.auth?.pass || '',
+    },
+  },
+  // Home dashboard: TP-Link smart plugs (Kasa over port 9999, or Tapo over KLAP).
+  kasa: {
+    ...(fileConfig.kasa || {}),
+    // Tapo plugs need the TP-Link account credentials for the local handshake.
+    tapo: {
+      email: process.env.TAPO_EMAIL || fileConfig.kasa?.tapo?.email || '',
+      password: process.env.TAPO_PASSWORD || fileConfig.kasa?.tapo?.password || '',
+    },
+  },
+  // Charger page "Efficiency & fuel" section: EV km-per-charge vs petrol cost.
+  // All tunable via .env without touching config.json.
+  fuel: {
+    ...(fileConfig.fuel || {}),
+    // 'national' (average all 18 DGEG districts) or a numeric district id.
+    scope: process.env.FUEL_DISTRICT_SCOPE || fileConfig.fuel?.scope || 'national',
+    // DGEG fuel label to average. "Gasolina especial 98" == 98+ (premium).
+    type: process.env.FUEL_TYPE || fileConfig.fuel?.type || 'Gasolina especial 98',
+    // Used when the DGEG fetch fails (€/L).
+    fallbackEurL: Number(process.env.FUEL_FALLBACK_EUR_L || fileConfig.fuel?.fallbackEurL || 2.194),
+    // Comparison ICE consumption (litres / 100 km).
+    iceLPer100: Number(process.env.ICE_L_PER_100KM || fileConfig.fuel?.iceLPer100 || 10),
+    // Used when TeslaMate has no usable drives (Wh/km).
+    fallbackWhPerKm: Number(process.env.FALLBACK_WH_PER_KM || fileConfig.fuel?.fallbackWhPerKm || 200),
+    // How far back to sample drives for the lifetime avg Wh/km.
+    avgWindowDays: Number(process.env.FUEL_AVG_WINDOW_DAYS || fileConfig.fuel?.avgWindowDays || 180),
   },
 };
 

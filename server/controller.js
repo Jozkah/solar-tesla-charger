@@ -21,7 +21,15 @@ import * as wallconnector from './wallconnector.js';
 import * as solax from './solax.js';
 import * as weather from './weather.js';
 import * as notify from './notify.js';
+import * as kasa from './kasa.js';
+import * as cameras from './cameras.js';
 import * as db from './db.js';
+import * as stats from './stats.js';
+import { resolveWcReading } from './wc-resolve.js';
+import { isTelemetryFrozen } from './charge-detect.js';
+import { meterSignature, isActive, resolveFreshness } from './freshness.js';
+import * as backfill from './backfill.js';
+import * as repair from './repair.js';
 
 const C = config.control;
 
@@ -44,8 +52,12 @@ export const state = {
   wc: null, // wall connector vitals
   solax: null, // SolaX cloud generation (solarPanel1)
   weather: null, // current weather at the car location
+  kasa: null, // home dashboard: TP-Link smart plugs (cached)
+  cameras: null, // home dashboard: Agent DVR reachability status
   computed: null,
   charging: false,
+  stale: null, // { meters: {fresh, reason, sinceMs}, wcAgeMs, carAgeMs } — see freshness.js
+  backfill: null, // meter-history recovery status — see backfill.js
   teslaConfigured: teslaConfigured(),
   dryRun: C.dryRun,
 };
@@ -55,14 +67,11 @@ let lastSetAmps = null;
 let savedChargeLimit = null; // the user's real SoC limit, stashed while boosted
 let boostIdleSince = 0; // when free solar first dropped while boosted (revert grace timer)
 let timers = [];
-let controlBusy = false; // guards controlCycle against overlapping runs (interval + kicks)
 
 // Charging start/stop event detection + a small queue the Apple Shortcut drains.
 let prevCharging = null;
 const eventLog = []; // recent events (for reference)
 const pendingNotifications = []; // messages awaiting delivery to the phone
-let solarFasterSince = 0; // when "override slower than solar" first became true (0 = not now)
-let solarFasterNotifiedAt = 0; // last time we pushed that warning (for cooldown)
 
 function recordEvent(type, message) {
   const e = { ts: Date.now(), type, message };
@@ -97,21 +106,6 @@ function maybeNotify(d) {
   }
 }
 
-// Push a one-shot warning when an override is charging slower than the solar
-// surplus could — i.e. free solar is being exported instead of used. Edge-triggered
-// with a sustain window (ignore brief surplus spikes) and a cooldown (don't nag).
-function maybeWarnSolarFaster(now) {
-  const comp = state.computed;
-  if (!comp?.solarCouldChargeFaster || !state.override) { solarFasterSince = 0; return; }
-  if (!solarFasterSince) solarFasterSince = now;
-  const sustainMs = (C.solarFasterSustainSec ?? 120) * 1000;
-  const cooldownMs = (C.solarFasterCooldownMin ?? 30) * 60_000;
-  if (now - solarFasterSince < sustainMs) return; // must persist — ignore passing clouds/spikes
-  if (now - solarFasterNotifiedAt < cooldownMs) return; // already warned recently
-  solarFasterNotifiedAt = now;
-  recordEvent('solar', `☀️ Solar could charge faster — surplus supports ${comp.potentialAmps}A but you're overriding at ${state.override.amps}A. Switch to Auto to use the free solar.`);
-}
-
 export function getState() {
   return { ...state, ts: Date.now() };
 }
@@ -124,7 +118,6 @@ export function setMode(mode) {
   state.mode = mode;
   if (mode === 'auto') state.override = null;
   emit();
-  kickControl();
   return state.mode;
 }
 export function setOverride(amps, expiresInMin) {
@@ -132,13 +125,11 @@ export function setOverride(amps, expiresInMin) {
   state.override = { amps: a, expiresAt: expiresInMin ? Date.now() + expiresInMin * 60_000 : null };
   state.mode = 'auto';
   emit();
-  kickControl(); // apply the forced charge right away, don't wait for the next tick
   return state.override;
 }
 export function clearOverride() {
   state.override = null;
   emit();
-  kickControl();
 }
 
 // --- Overnight / scheduled grid charging ------------------------------------
@@ -179,7 +170,6 @@ function isScheduleActive() {
 export function setMaxAmps(amps) {
   state.maxAmps = clamp(Math.round(amps), C.minAmps, C.maxAmps);
   emit();
-  kickControl();
   return state.maxAmps;
 }
 
@@ -210,76 +200,15 @@ export function setAllowLimitIncrease(on) {
   state.allowLimitIncrease = !!on;
   persistBoost();
   emit();
-  kickControl();
   return state.allowLimitIncrease;
-}
-// Raise/restore the car's SoC limit to capture free solar past the user's cap.
-// Idempotent per cycle: only sends a command on the raise/revert transitions.
-async function manageChargeLimit(d, now) {
-  if (!state.teslaConfigured) return;
-  const soc = state.car?.batteryLevel;
-  const carLimit = state.car?.chargeLimitSoc;
-  if (soc == null || carLimit == null) return; // need real telemetry to act safely
-  // While boosted the car reads 100%, so the user's real cap is the stashed value.
-  const baseLimit = state.limitBoosted && savedChargeLimit != null ? savedChargeLimit : carLimit;
-  const haveSurplus = d.surplusW >= C.minAmps * d.voltage - C.resumeMarginWatts;
-  const wantBoost = state.allowLimitIncrease && d.connected && state.mode === 'auto'
-    && !state.override && !isScheduleActive() && baseLimit < 100 && soc < 100 && haveSurplus;
-  if (wantBoost) {
-    boostIdleSince = 0;
-    if (!state.limitBoosted) {
-      savedChargeLimit = carLimit; // stash the user's real limit before raising
-      state.limitBoosted = true;
-      persistBoost();
-      await safeCmd(`raise charge limit ${carLimit}%→100% (free sun)`, () => tesla.setChargeLimit(100));
-    }
-    return;
-  }
-  if (state.limitBoosted) {
-    const reason = !state.allowLimitIncrease ? 'off'
-      : !d.connected ? 'unplugged'
-      : state.override || isScheduleActive() || state.mode !== 'auto' ? 'manual'
-      : soc >= 100 ? 'full'
-      : 'no sun';
-    if (reason === 'no sun') { // grace period so passing clouds don't thrash the limit
-      if (!boostIdleSince) boostIdleSince = now;
-      if (now - boostIdleSince < BOOST_REVERT_DELAY_MS) return;
-    }
-    const restore = savedChargeLimit != null ? clamp(savedChargeLimit, 50, 100) : null;
-    if (restore == null || carLimit <= restore) {
-      // Nothing to undo (no stash, or the car is already at/below the user's
-      // limit because they set it themselves) — just drop the flag.
-      state.limitBoosted = false; savedChargeLimit = null; boostIdleSince = 0; persistBoost();
-      return;
-    }
-    // Don't wake a sleeping car just to set a limit; wait until it's awake.
-    if (state.car?.stale) return;
-    // Issue the revert FIRST and only forget we were boosted once it succeeds —
-    // a failed command (car asleep/offline) must NOT orphan the limit at 100%.
-    const r = await safeCmd(`revert charge limit →${restore}% (${reason})`, () => tesla.setChargeLimit(restore));
-    if (!String(r).startsWith('failed')) {
-      state.limitBoosted = false; savedChargeLimit = null; boostIdleSince = 0; persistBoost();
-    }
-  }
 }
 export async function manualCharge(action) {
   if (action === 'start') {
-    // A manual start resumes management. Un-pause so the control loop charges
-    // (use the Override button to force a fixed rate regardless of solar).
-    if (state.mode === 'pause') { state.mode = 'auto'; emit(); }
     fullChargeLatch = false; // user explicitly wants to charge
     state.fullCharge = false;
     return tesla.chargeStart();
   }
-  if (action === 'stop') {
-    // A manual stop must stick. Drop any override (otherwise the control loop
-    // immediately re-issues charge_start to honor it) and pause auto so solar
-    // surplus doesn't silently restart the charge. "Back to auto" resumes.
-    state.override = null;
-    state.mode = 'pause';
-    emit();
-    return tesla.chargeStop();
-  }
+  if (action === 'stop') return tesla.chargeStop();
   throw new Error('action must be start|stop');
 }
 
@@ -309,6 +238,7 @@ let fullChargeLatch = false;
 let chargeStartedAt = 0;
 let wasCharging = false;
 let lastConnSeen = null; // WC plugged state, to detect replug and refresh the car
+let lastAmpCmdAt = 0; // throttle set_charging_amps to conserve Fleet API command quota
 // The WC's veto over a car-claimed charge only counts once it has held for a
 // while: vitals are unsmoothed, so one odd read (contactor closed, momentary
 // 0 A) would flip isCharging for a single live tick — enough to push a bogus
@@ -316,6 +246,61 @@ let lastConnSeen = null; // WC plugged state, to detect replug and refresh the c
 // lasts minutes, so waiting costs nothing; the car's own poll is 90s behind.
 let wcStoppedSince = 0; // first tick the WC reported no current (0 = current flowing)
 const WC_VETO_MS = 15_000;
+// Telemetry-freeze detection: tracks the car's own charge_energy_added
+// accumulator (kWh) across successful carCycle() fetches. A real charge
+// always advances this counter; a frozen-but-successful TeslaMate snapshot
+// (state still 'Charging', no API error, so car.stale never gets set) does
+// not. chargeEnergyAddedAt is only touched on a SUCCESSFUL fetch (see
+// carCycle) — a failed fetch already sets car.stale, which the existing
+// stale guard below handles, so this must not also advance on error.
+let lastChargeEnergyAdded = null;
+let chargeEnergyAddedAt = 0; // ms when charge_energy_added last CHANGED
+const TELEMETRY_FREEZE_MS = 5 * 60_000; // a real charge advances the kWh accumulator well within this
+
+// The WC is usually reachable but blips (slow/dropped poll). Carrying the last
+// successful reading through a short grace window keeps one bad poll from
+// flipping the whole decision onto laggy car telemetry. 15s covers a blip or
+// two at the ~2s live-poll cadence while bounding staleness: a carried reading
+// can be up to 15s old, but it self-corrects on the very next success — far
+// better than one blip triggering the car-telemetry fallback.
+let lastGoodWc = null;
+let lastGoodWcAt = 0;
+
+// Meter freshness. On 2026-09-03 a LAN outage left state.meters holding one
+// reading for six hours: liveCycle only set lastError, the control loop kept
+// recording and acting on the frozen values, and the chart drew six hours of
+// flat lines. These timestamps feed freshness.js; when the meters are stale
+// the control loop records nothing and commands nothing (see controlCycle),
+// and once they come back a gap worth recovering is handed to backfill.js.
+let metersOkAt = 0; // last successful readMeters()
+let metersFailedSince = 0; // first failure of the current outage (0 = healthy)
+let metersSig = ''; // last payload signature (powers + Wh counters)
+let metersSigChangedAt = 0; // when the signature last changed
+let lastSampleAt = 0; // ts of the last row written to `samples`
+let gapStart = 0; // ts the current recording gap began (0 = not in a gap)
+const METERS_MAX_AGE_MS = 30_000; // ~15 live ticks without a success
+const METERS_FREEZE_MS = 5 * 60_000; // identical payload this long while active = replayed data
+const METERS_ACTIVE_W = 50;
+const BACKFILL_MIN_GAP_MS = 10 * 60_000; // one em_data.csv bucket; shorter gaps aren't worth a download
+
+function updateStale(now) {
+  const meters = resolveFreshness({
+    okAt: metersOkAt, failedSince: metersFailedSince, sigChangedAt: metersSigChangedAt,
+    active: isActive(state.meters, METERS_ACTIVE_W), nowMs: now, maxAgeMs: METERS_MAX_AGE_MS, freezeMs: METERS_FREEZE_MS,
+  });
+  state.stale = {
+    meters,
+    wcAgeMs: lastGoodWcAt ? now - lastGoodWcAt : null,
+    carAgeMs: state.car?.ts ? now - state.car.ts : null,
+  };
+  state.backfill = backfill.getStatus();
+  return meters.fresh;
+}
+function fmtAge(ms) {
+  const m = Math.max(0, Math.round(ms / 60_000));
+  return m >= 60 ? `${Math.floor(m / 60)}h${m % 60}m` : `${m}m`;
+}
+const WC_GRACE_MS = 15_000;
 
 // --- Battery capacity auto-estimate ------------------------------------------
 // Learned from real charges: capacity ≈ charge_energy_added / SoC gained (the
@@ -369,10 +354,10 @@ function trackCapacity(car, isCharging) {
 // source for actual current / voltage / charging+plugged state when available.
 function computeDecision(meters, car, wc) {
   const wcOk = wc && !wc.error;
-  // Trust the car's own charging state; fall back to the Wall Connector only at a
-  // real charge rate (>= min amps). A plugged-in car pulls a few amps of standby/
-  // conditioning power (battery heat/cool, cabin preheat, Sentry) that keeps the WC
-  // contactor closed and otherwise looks like a charge.
+  // A plugged-in Tesla keeps the Wall Connector contactor closed and pulls a few
+  // amps of standby/conditioning power (battery heat/cool, cabin preheat, Sentry)
+  // WITHOUT charging — the WC alone then reads ~1–4 A and looks like a charge. Trust
+  // the car's own state; fall back to the WC only at a real charge rate (>= min amps).
   const wcCurrent = wcOk ? (wc.currentA || 0) : 0;
   // Trust the car's state when we have it: with climate/AC on while plugged the
   // WC reports a real ≥minAmps draw that is NOT charging. The WC heuristic only
@@ -381,24 +366,48 @@ function computeDecision(meters, car, wc) {
   // But the car/API can miss a stop (TeslaMateApi outage, TeslaMate lag): a frozen
   // 'Charging' snapshot would otherwise report a phantom charge forever, and the
   // phantom chargeW inflates the displayed solar via the energy-balance floor.
-  // Two guards: a stale snapshot loses its charging-asserting vote (only those —
-  // a frozen 'Stopped'/'Complete' must keep blocking the WC fallback, or a
-  // conditioning draw would read as a charge), and the WC — local ground truth
-  // for current actually flowing — vetoes a claimed charge once it has read no
-  // current for WC_VETO_MS. 'Starting' is exempt (contactor hasn't closed yet).
+  // Two guards: a stale OR telemetry-frozen snapshot loses its charging-asserting
+  // vote (only those — a frozen 'Stopped'/'Complete' must keep blocking the WC
+  // fallback, or a conditioning draw would read as a charge), and the WC — local
+  // ground truth for current actually flowing — vetoes a claimed charge once it
+  // has read no current for WC_VETO_MS. 'Starting' is exempt (contactor hasn't
+  // closed yet).
   const rawState = car?.chargingState;
-  const carState = car?.stale && (rawState === 'Charging' || rawState === 'Starting') ? null : rawState;
+  // Telemetry-freeze: catches the case a stale snapshot slips through WITHOUT
+  // an API error (so car.stale never gets set) — TeslaMate serving the same
+  // successful 'Charging' response over and over. charge_energy_added always
+  // advances during a real charge, so this can never fire on one; see
+  // charge-detect.js for the pure condition and isTelemetryFrozen's own
+  // "never on a real charge" reasoning.
+  const frozen = isTelemetryFrozen({
+    chargingState: rawState, chargeEnergyAdded: car?.chargeEnergyAdded,
+    lastChangedAt: chargeEnergyAddedAt, nowMs: Date.now(), freezeMs: TELEMETRY_FREEZE_MS,
+  });
+  const carState = (car?.stale || frozen) && (rawState === 'Charging' || rawState === 'Starting') ? null : rawState;
   // A WC reading no current can't veto while we're mid-throttle-reset: we issued
   // that stop ourselves and restart within seconds, so the session continues.
   const wcNoCurrent = wcOk && !wc.charging;
-  if (!wcNoCurrent) wcStoppedSince = 0;
+  // Hold the timer at zero for the whole throttle-reset window, not just while
+  // deciding wcSaysStopped: the reset's own chargeStop makes wcNoCurrent true
+  // and would otherwise let wcStoppedSince start counting during the stop, so
+  // by the time the reset clears (~30s) and the charge restarts, the timer is
+  // already ~30s old and the veto fires on the FIRST tick — before the car has
+  // drawn any current. That flips isCharging false, fires a bogus "charging
+  // stopped" push, splits one session into two, and re-issues chargeStart —
+  // exactly the flapping the debounce exists to prevent. Resetting the timer
+  // here instead gives the restart a fresh full WC_VETO_MS window once current
+  // genuinely stops flowing again.
+  if (!wcNoCurrent || throttleResetStopAt) wcStoppedSince = 0;
   else if (!wcStoppedSince) wcStoppedSince = Date.now();
   const wcSaysStopped = wcNoCurrent && !throttleResetStopAt
     && Date.now() - wcStoppedSince >= WC_VETO_MS;
   const isCharging = !!(carState === 'Starting'
     || (carState === 'Charging' && !wcSaysStopped)
     || (carState == null && wcOk && wc.charging && wcCurrent >= (C.minAmps - 0.5)));
-  const connected = wcOk ? wc.connected : !!car?.pluggedIn;
+  // A charging car is by definition plugged in; also accept either the Wall
+  // Connector's or the car's plugged signal (one may be stale, e.g. when the
+  // Fleet API is rate-limited and car telemetry goes stale).
+  const connected = isCharging || (wcOk && wc.connected) || !!car?.pluggedIn;
   // Plugged in, not charging, but still drawing power = conditioning / Sentry / standby.
   const standbyW = connected && !isCharging && wcOk && wc.power > 100 ? Math.round(wc.power) : 0;
   if (isCharging && !wasCharging) chargeStartedAt = Date.now();
@@ -480,15 +489,6 @@ function computeDecision(meters, car, wc) {
 }
 
 function setComputed(meters, d) {
-  // Amps the current surplus could sustain (0 if below the minimum to charge).
-  const potentialAmps = clamp(Math.floor(d.surplusW / d.voltage), 0, d.ampCeiling);
-  const ov = state.override;
-  // Override is charging slower than the available solar surplus could sustain, so
-  // free solar is being exported instead of used. Margin avoids noise from small
-  // fluctuations. (When the override draw already exceeds surplus, this is false —
-  // that's "using grid", a different situation the user didn't ask to be warned of.)
-  const solarCouldChargeFaster =
-    !!(ov && d.isCharging && potentialAmps - ov.amps >= (C.solarFasterMarginAmps ?? 2));
   state.computed = {
     exportW: meters.exportW,
     importW: meters.importW,
@@ -504,10 +504,12 @@ function setComputed(meters, d) {
     throttled: d.throttled,
     throttleInfo: d.throttleInfo, // latched { since, requestA, actualA } while active
     batteryKwh: autoBatteryKwh() ?? C.batteryKwh ?? 60, // learned from charges, config fallback
+    solarMaxW: C.solarMaxW ?? null, // rated solar ceiling; caps the energy-balance floor
+    solaxMaxW: C.solaxMaxW ?? null, // SolaX rating; floor can't exceed live Growatt + this
     batteryKwhLearned: autoBatteryKwh() != null,
     minAmps: C.minAmps,
-    potentialAmps,
-    solarCouldChargeFaster,
+    // Amps the current surplus could sustain (0 if below the minimum to charge).
+    potentialAmps: clamp(Math.floor(d.surplusW / d.voltage), 0, d.ampCeiling),
     enoughToCharge: d.enoughToCharge,
     standbyW: d.standbyW, // conditioning/Sentry draw while plugged in but not charging
     // True when the car is plugged in on auto but charging is held off because
@@ -520,26 +522,51 @@ function setComputed(meters, d) {
 
 // --- Live loop (fast, dashboard) -------------------------------------------
 
+// setInterval(live, ~2s) has no natural back-pressure: if a tick runs long
+// (e.g. a hung WC even at the capped ~1xtimeout), the next tick fires anyway
+// and cycles pile up concurrently, each racing to write state.meters/state.wc.
+// This guard makes a slow tick skip the next one instead of overlapping it.
+let liveBusy = false;
+
 async function liveCycle() {
+  if (liveBusy) return;
+  liveBusy = true;
   const now = Date.now();
   try {
-    const [meters, wc] = await Promise.all([shelly.readMeters(), wallconnector.readVitals()]);
+    const [meters, wcRead] = await Promise.all([shelly.readMeters(), wallconnector.readVitals()]);
     state.meters = meters;
+    metersOkAt = now; metersFailedSince = 0;
+    const sig = meterSignature(meters);
+    if (sig !== metersSig) { metersSig = sig; metersSigChangedAt = now; }
+    const { wc, good } = resolveWcReading({ read: wcRead, lastGood: lastGoodWc, lastGoodAt: lastGoodWcAt, nowMs: now, graceMs: WC_GRACE_MS });
     state.wc = wc;
+    // Math.max guards against a stale write if ticks ever resolve out of
+    // order (the liveBusy guard above already prevents overlap, but this
+    // keeps lastGoodWcAt monotonic even so — belt and suspenders).
+    if (good) { lastGoodWc = wcRead; lastGoodWcAt = Math.max(lastGoodWcAt, now); }
     state.solax = solax.getCached(); // cached; refreshes itself at most once per pollSec
     const loc = state.car?.location;
     state.weather = weather.getCached(loc?.lat, loc?.lon); // cached; refreshes ~every pollMin
+    state.kasa = kasa.getCached(); // cached; refreshes itself at most once per pollSec
+    state.cameras = cameras.getStatus(); // reachability only; video flows via proxy routes
     if (state.lastError && state.lastError.startsWith('shelly')) state.lastError = null;
-    const d = computeDecision(meters, state.car, wc);
-    state.charging = d.isCharging;
-    setComputed(meters, d);
-    maybeNotify(d);
-    maybeWarnSolarFaster(now);
+    // A frozen payload (success, but nothing has moved for minutes) is not a
+    // reading either: leave computed/charging as they are and don't notify.
+    if (updateStale(now)) {
+      const d = computeDecision(meters, state.car, wc);
+      state.charging = d.isCharging;
+      setComputed(meters, d);
+      maybeNotify(d);
+    }
     state.liveAt = now;
     emit();
   } catch (err) {
     state.lastError = `shelly: ${err.message}`;
+    if (!metersFailedSince) metersFailedSince = now;
+    updateStale(now);
     emit();
+  } finally {
+    liveBusy = false;
   }
 }
 
@@ -556,10 +583,70 @@ async function carCycle() {
   try {
     state.car = await tesla.getVehicleData();
     if (state.lastError && state.lastError.startsWith('tesla')) state.lastError = null;
+    // Track charge_energy_added across successful fetches only — a frozen
+    // TeslaMate snapshot repeats the same value, which is exactly the signal
+    // isTelemetryFrozen looks for. Deliberately NOT touched in the catch
+    // below: an error already sets car.stale, which the existing stale
+    // guard in computeDecision handles on its own.
+    const cea = state.car?.chargeEnergyAdded ?? null;
+    if (cea != null && cea !== lastChargeEnergyAdded) { lastChargeEnergyAdded = cea; chargeEnergyAddedAt = Date.now(); }
     emit();
   } catch (err) {
     state.lastError = `tesla: ${err.message}`;
     state.car = state.car ? { ...state.car, stale: true } : null;
+  }
+}
+
+// Raise/restore the car's SoC limit to capture free solar past the user's cap.
+// Idempotent per cycle: only sends a command on the raise/revert transitions.
+async function manageChargeLimit(d, now) {
+  if (!state.teslaConfigured) return;
+  const soc = state.car?.batteryLevel;
+  const carLimit = state.car?.chargeLimitSoc;
+  if (soc == null || carLimit == null) return; // need real telemetry to act safely
+
+  // While boosted the car reads 100%, so the user's real cap is the stashed value.
+  const baseLimit = state.limitBoosted && savedChargeLimit != null ? savedChargeLimit : carLimit;
+  const haveSurplus = d.surplusW >= C.minAmps * d.voltage - C.resumeMarginWatts;
+  const wantBoost = state.allowLimitIncrease && d.connected && state.mode === 'auto'
+    && !state.override && !isScheduleActive() && baseLimit < 100 && soc < 100 && haveSurplus;
+
+  if (wantBoost) {
+    boostIdleSince = 0;
+    if (!state.limitBoosted) {
+      savedChargeLimit = carLimit; // stash the user's real limit before raising
+      state.limitBoosted = true;
+      persistBoost();
+      await safeCmd(`raise charge limit ${carLimit}%→100% (free sun)`, () => tesla.setChargeLimit(100));
+    }
+    return;
+  }
+
+  if (state.limitBoosted) {
+    const reason = !state.allowLimitIncrease ? 'off'
+      : !d.connected ? 'unplugged'
+      : state.override || isScheduleActive() || state.mode !== 'auto' ? 'manual'
+      : soc >= 100 ? 'full'
+      : 'no sun';
+    if (reason === 'no sun') { // grace period so passing clouds don't thrash the limit
+      if (!boostIdleSince) boostIdleSince = now;
+      if (now - boostIdleSince < BOOST_REVERT_DELAY_MS) return;
+    }
+    const restore = savedChargeLimit != null ? clamp(savedChargeLimit, 50, 100) : null;
+    if (restore == null || carLimit <= restore) {
+      // Nothing to undo (no stash, or the car is already at/below the user's
+      // limit because they set it themselves) — just drop the flag.
+      state.limitBoosted = false; savedChargeLimit = null; boostIdleSince = 0; persistBoost();
+      return;
+    }
+    // Don't wake a sleeping car just to set a limit; wait until it's awake.
+    if (state.car?.stale) return;
+    // Issue the revert FIRST and only forget we were boosted once it succeeds —
+    // a failed command (car asleep/offline) must NOT orphan the limit at 100%.
+    const r = await safeCmd(`revert charge limit →${restore}% (${reason})`, () => tesla.setChargeLimit(restore));
+    if (!String(r).startsWith('failed')) {
+      state.limitBoosted = false; savedChargeLimit = null; boostIdleSince = 0; persistBoost();
+    }
   }
 }
 
@@ -578,6 +665,20 @@ async function controlCycle() {
   if (!meters) {
     state.lastAction = 'waiting for meters';
     return;
+  }
+  // Blind: no decision, no command, no sample. Recording the last reading
+  // would plateau the chart and poison the day's totals; acting on it could
+  // start or stop a charge from numbers that are minutes old.
+  if (!updateStale(now)) {
+    if (!gapStart) gapStart = lastSampleAt || now;
+    const st = state.stale.meters;
+    state.lastAction = `meters ${st.reason} ${fmtAge(now - st.sinceMs)}`;
+    emit();
+    return;
+  }
+  if (gapStart) {
+    if (now - gapStart >= BACKFILL_MIN_GAP_MS) backfill.schedule(gapStart, now);
+    gapStart = 0;
   }
 
   const wc = state.wc;
@@ -652,10 +753,16 @@ async function controlCycle() {
         await safeCmd('start charge', () => tesla.chargeStart());
       }
       const current = car?.chargeAmps ?? lastSetAmps;
-      if (current == null || Math.abs(desired - current) >= C.minAmpStepChange || eff) {
+      const delta = current == null ? Infinity : Math.abs(desired - current);
+      // Conserve Fleet API command quota: small solar-driven tweaks go out at most
+      // once per minAmpCmdIntervalSec; a big jump or a manual override goes now.
+      const bigJump = delta >= (C.ampCmdForceStep ?? 5);
+      const dueByTime = (now - lastAmpCmdAt) / 1000 >= (C.minAmpCmdIntervalSec ?? 60);
+      if (current == null || eff || bigJump || (delta >= C.minAmpStepChange && dueByTime)) {
         action = await safeCmd(`set ${desired}A${sched && !state.override ? ' (schedule)' : ''}`, () => tesla.setChargingAmps(desired));
         appliedAmps = desired;
         lastSetAmps = desired;
+        lastAmpCmdAt = now;
         bumpAdjustments();
       } else {
         action = `hold ${current}A`;
@@ -690,21 +797,8 @@ async function controlCycle() {
     mode: state.override ? 'override' : state.mode,
     action,
   });
+  lastSampleAt = now;
   emit();
-}
-
-// Guarded entry point: the periodic interval AND the on-demand kicks (override /
-// mode / ceiling changes) both go through here so two cycles never overlap and
-// double-fire Tesla commands.
-async function runControl() {
-  if (controlBusy) return;
-  controlBusy = true;
-  try { await controlCycle(); }
-  finally { controlBusy = false; }
-}
-// Fire-and-forget control cycle for UI actions that want an immediate effect.
-function kickControl() {
-  runControl().catch((e) => { state.lastError = String(e?.message || e); });
 }
 
 // --- Helpers ---------------------------------------------------------------
@@ -761,18 +855,105 @@ async function safeCmd(label, fn) {
   }
 }
 
+// Backfill missing daily_stats rows so a day's samples get rolled up while
+// they still exist — otherwise a day nobody happened to view before it ages
+// out of sampleRetentionDays loses its data from `all` forever, and the first
+// `all`/`month` view after a long-uptime deploy would stall the loop rolling
+// up a big backlog in one go. One day per setImmediate tick: warmNextRollupDay
+// does at most one dayRollup compute (~25ms worst case) then returns, so this
+// never blocks the ~2s live loop, the SSE feed, or the control loop that
+// commands the car. Already-persisted days are skipped almost for free, so
+// this is safe and cheap to run from scratch on every boot. Harmless if the
+// process exits mid-warm — the next boot just resumes the scan.
+//
+// Run once at boot (async, warmRollupsStep) AND re-armed on the daily timer
+// (synchronous, warmRollupsDrain — see start()), ahead of pruneOld(): a day
+// is only persistable for a ~sampleRetentionDays window (shouldPersistDay
+// refuses anything before retentionStart), and that window slides forward
+// every day. A boot-only warm-up covers history up to the day it ran; on a
+// machine that stays up longer than the retention window, every day *since*
+// boot would otherwise never get scanned (warmCursor already sat at "today"
+// from the first run) and would eventually age out of retention and get
+// pruned — losing that day's data from `all` for good. Re-arming daily lets
+// the cursor resume from wherever it stopped and catch up.
+let warmFailStreak = 0;
+const WARM_MAX_FAIL_STREAK = 5; // give up for this run after this many in a row
+
+// Runs exactly one warm-up day and returns whether there's more to do.
+// Shared by the async boot chain (warmRollupsStep) and the synchronous daily
+// drain (warmRollupsDrain) below so both get the same error handling: a
+// background backfill failure is not user-actionable, so it must not hijack
+// the dashboard's error banner (state.lastError) — log it instead, prefixed
+// so it's identifiable in the logs. warmCursor has already advanced past the
+// failing day inside warmNextRollupDay, so retrying moves on to the next day
+// rather than looping on the same one; the streak counter just bounds how
+// long we keep trying if failures persist (e.g. a corrupt run of days) so
+// this can't retry forever.
+function warmRollupsTick() {
+  try {
+    const more = stats.warmNextRollupDay();
+    warmFailStreak = 0;
+    return more;
+  } catch (e) {
+    warmFailStreak++;
+    console.error(`rollup warm: ${e?.message || e}`);
+    return warmFailStreak < WARM_MAX_FAIL_STREAK;
+  }
+}
+
+// Boot warm-up: one day per event-loop tick via setImmediate, so the
+// synchronous DB work (~25ms/day worst case) never blocks the ~2s live loop,
+// the SSE feed, or the control loop that commands the car for more than one
+// day at a stretch — see the big comment above for the full rationale.
+function warmRollupsStep() {
+  if (warmRollupsTick()) setImmediate(warmRollupsStep);
+}
+
+// Daily re-arm: drains the backlog SYNCHRONOUSLY, in the same tick, before
+// pruneOld() runs right after it (see start()). This is what actually makes
+// good on "the day that just aged into the persistable window gets its
+// chance before pruneOld can delete its samples" — a fully async chain (as
+// warmRollupsStep uses for the boot warm-up) is NOT guaranteed to have
+// reached that day by the time this callback returns and pruneOld() fires;
+// nothing here says "and the rest happens eventually" so it must not promise
+// "happens before X" while actually being async.
+//
+// Safe to do synchronously specifically here, unlike the boot warm-up: this
+// timer fires once every 24h, and under normal operation the boot warm-up
+// (or yesterday's run of this very drain) has already caught warmCursor up
+// to "today - 1" long before the next tick — so this loop typically runs
+// ONE ~25ms step, not a multi-day backfill. WARM_MAX_FAIL_STREAK still bounds
+// it if a run of days keeps throwing. If a deployment goes down for weeks and
+// wakes up with a huge backlog, that backlog is instead drained by the async
+// boot warm-up (setImmediate chain) well before this interval ever fires.
+function warmRollupsDrain() {
+  while (warmRollupsTick());
+}
+
 export function start() {
   if (timers.length) return;
   const live = () => liveCycle().catch((e) => { state.lastError = String(e?.message || e); });
-  const ctrl = () => runControl().catch((e) => { state.lastError = String(e?.message || e); });
+  const ctrl = () => controlCycle().catch((e) => { state.lastError = String(e?.message || e); });
   const car = () => carCycle().catch((e) => { state.lastError = String(e?.message || e); });
+  const camStatus = () => cameras.refreshStatus().catch(() => {}); // home dashboard reachability
+  repair.runOnceAtStartup(); // one-time cleanup of flat runs recorded before the stale gate existed
   live();
+  camStatus();
   setTimeout(car, 1500); // first car read shortly after meters
   setTimeout(ctrl, 2500); // let meters + car populate first
+  setImmediate(warmRollupsStep); // backfill missing daily_stats rows, one day per tick
   timers.push(setInterval(live, (C.livePollSec || 2) * 1000));
   timers.push(setInterval(ctrl, C.pollIntervalSec * 1000));
   timers.push(setInterval(car, (C.carPollSec || 90) * 1000));
-  timers.push(setInterval(() => db.pruneOld(), 86_400_000));
+  timers.push(setInterval(camStatus, (config.cameras?.statusPollSec || 45) * 1000));
+  // Re-arm the warm-up ahead of the prune so a day that just became eligible
+  // to persist gets its chance before pruneOld can delete its samples — see
+  // warmRollupsDrain's comment for why this must be the synchronous drain,
+  // not warmRollupsStep's async chain. warmFailStreak resets here too: it
+  // otherwise only clears on success, so a run that ended at the 5-failure
+  // cap would leave the next day's re-arm with just ONE attempt before
+  // hitting that same stale cap again, instead of a fresh 5.
+  timers.push(setInterval(() => { warmFailStreak = 0; warmRollupsDrain(); db.pruneOld(); }, 86_400_000));
   timers.forEach((t) => t.unref?.());
 }
 export function stop() {

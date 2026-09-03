@@ -1,442 +1,448 @@
-# ☀️ Solar-Aware Tesla Charger
+# ☀️🏠 Solar-Aware Tesla Charger + Home Dashboard
 
-A self-hosted Node.js service that reads your home energy meters and solar inverters in
-real time and automatically tunes your **Tesla's charging amperage** to soak up your
-**solar export surplus** — always keeping a configurable export buffer so you're never
-paying the grid to charge the car. It ships with a mobile-first, iOS-styled dashboard
-(usable from your phone over the LAN), live Server-Sent-Events updates, SQLite history,
-push notifications, scheduled overnight grid charging, and a small REST API that also
-drives Apple Shortcuts.
+A self-hosted Node.js service that turns your home energy data into two things:
 
-> **Local-first & private.** All credentials live in a gitignored `.env`. The dashboard
-> and API have **no authentication** — run them on your LAN only.
+1. **A solar-aware Tesla charger** — it reads your home energy meters and solar
+   inverters in real time and automatically trims your **Tesla's charging amperage**
+   to soak up your **solar surplus**, always keeping a small export buffer so you're
+   never paying the grid to charge the car.
+2. **A home dashboard** (`/home`) — a single mobile-first page that puts your
+   **security cameras** (Agent DVR) and **smart plugs** (TP-Link Kasa / Tapo) next to
+   the same live energy view, weather, and power chart.
+
+Everything runs on your LAN and is meant to be opened from your phone over Wi-Fi.
+There is no cloud account for this app, no build step, and no authentication — keep
+it on your local network only.
+
+> **Local-first & private.** All credentials live in a gitignored `.env`. Device
+> IPs (cameras, plugs, meters) are **local-LAN addresses, not secrets**, so they live
+> in `config.json`. Only credentials (tokens, account passwords) go in `.env`.
 
 ## Screenshots
 
-![Solar-aware Tesla charging dashboard](docs/screenshots/charger.svg)
+> Mockup previews with fictional values and placeholder camera feeds — safe to share publicly.
 
-> The page backdrop adapts to the **live weather** (clear/cloudy/rain/snow/storm, day/night).
+| Home dashboard | Solar charger |
+|:--:|:--:|
+| ![Home dashboard](docs/screenshots/home.svg) | ![Solar charger](docs/screenshots/charger.svg) |
+
+> Both pages' backdrops adapt to the **live weather** (clear/cloudy/rain/snow/storm, day/night).
 > Drop AI-generated images into `public/bg/` — prompts in [docs/weather-bg-prompts.md](docs/weather-bg-prompts.md).
 
 ---
 
 ## Table of contents
 
-- [What it does](#what-it-does)
+- [What's on this branch](#whats-on-this-branch)
+- [Pages](#pages)
 - [Architecture](#architecture)
-  - [The two loops](#the-two-loops)
-  - [The surplus → amps math](#the-surplus--amps-math)
-- [Integrations](#integrations)
-  - [Tesla backends (data + commands)](#tesla-backends-data--commands)
-- [Charging behavior & features](#charging-behavior--features)
+- [The base charger (briefly)](#the-base-charger-briefly)
+  - [How the control loop works](#how-the-control-loop-works)
+  - [Tesla backends](#tesla-backends)
+- [Home dashboard](#home-dashboard)
+  - [The `/home` page](#the-home-page)
+  - [Cameras (Agent DVR)](#cameras-agent-dvr)
+  - [Smart plugs (Kasa + Tapo)](#smart-plugs-kasa--tapo)
+  - [Weather](#weather)
 - [Setup & running](#setup--running)
 - [Configuration reference](#configuration-reference)
-  - [`config.json` — `control` block](#configjson--control-block)
-  - [`config.json` — other blocks](#configjson--other-blocks)
-  - [Environment variables (`.env`)](#environment-variables-env)
 - [HTTP API reference](#http-api-reference)
-- [Dashboard tour](#dashboard-tour)
-- [Data & persistence](#data--persistence)
-- [Apple Shortcuts](#apple-shortcuts)
-- [Running always-on](#running-always-on)
+- [Running always-on (Windows)](#running-always-on-windows)
 - [Security notes](#security-notes)
-- [Project layout](#project-layout)
+- [Further docs](#further-docs)
 
 ---
 
-## What it does
+## What's on this branch
 
-The car's charging draw is already measured by the main grid meter, so the controller can
-work out how much power it could push into the car while still keeping a small amount
-flowing out to the grid (the **export buffer**). It translates that surplus into a target
-**amperage** and issues Tesla commands to match — ramping the car up when the sun is strong
-and down (or pausing it) when it fades. On top of solar-following **Auto** mode you get a
-sticky manual **Override**, an overnight **scheduled grid charge**, a reliable **Stop**, and
-live charging telemetry from a Tesla Wall Connector.
+This is the `home-dashboard` branch. It contains the full base charger **plus** the
+home-dashboard feature:
 
-Highlights:
+- A new **`/home`** page (`public/home.html` + `public/home.js`) that is now the app's
+  landing page. The charger UI moved to **`/charger`**.
+- **Security-camera tiles** backed by a local [Agent DVR](https://www.ispyconnect.com/)
+  server (`server/cameras.js`).
+- **Smart-plug controls** for TP-Link **Kasa** (legacy) and **Tapo** (KLAP) plugs
+  (`server/kasa.js`).
+- A **weather** card with current conditions and a 14-day forecast
+  (`server/weather.js`, Open-Meteo, no API key).
 
-- **Solar-surplus charging** — derives amps from live grid export and ramps the car
-  up/down, keeping the export buffer (default 500 W).
-- **Voltage-aware** — uses the real charging voltage (handles local voltage sag/swell) and
-  detects Tesla's voltage-drop current throttle.
-- **Sticky live-adjust Override** — force a fixed rate that you can re-tune live by dragging
-  the slider (no re-press), applied immediately.
-- **Scheduled overnight grid charge** — charge from the grid at a fixed rate in a chosen
-  time window, then return to solar-auto.
-- **ETA tiles** — "To `<limit>`%" and "Done by `<clock>`" estimated from the Tesla API.
-- **Solar-vs-override warning** — dashboard banner + a debounced push notification when an
-  override is charging slower than the available solar surplus could.
-- **Real-time dashboard** — Server-Sent Events push live updates (~2 s); interactive power
-  chart with hover tooltip and 1h/6h/24h/7d ranges.
-- **Push notifications** — charging start/stop and the solar warning via ntfy, Pushover, or
-  Telegram.
-- **Statistics** (SQLite) — energy charged, % from solar, peak power/amps, charging time,
-  solar generated, exported/imported, estimated home usage; Session / Today / All-time.
+> This branch does **not** include the later charging-UX work (sticky live-adjust
+> override, solar-vs-override warning, time-to-full ETA tiles, benign-command
+> handling). Those live on a different branch and are intentionally not documented here.
+
+---
+
+## Pages
+
+| Path        | Served file         | What it is |
+|-------------|---------------------|------------|
+| `/`, `/home`| `public/home.html`  | **Home dashboard** — energy summary, power chart, weather, cameras, smart plugs. The default landing page. |
+| `/charger`  | `public/index.html` | The solar-aware **Tesla charger** dashboard (auto/manual amps, stats, scheduling). |
+
+Both pages share the same backend, the same live state, and the same Server-Sent
+Events stream (`/api/stream`).
 
 ---
 
 ## Architecture
 
-A single **Express** server (`server/index.js`) serves the static dashboard, exposes the
-REST API and an SSE stream, and starts the control engine in `server/controller.js`. There
-is **no build step** — the front-end is plain HTML/JS using the Tailwind CDN.
-
-**Stack:** Node.js ≥ 18 (built-in `node:sqlite`, native `fetch`), Express 4, `undici`,
-`dotenv`. ES modules (`"type": "module"`).
-
-### The two loops
-
-`controller.js` runs two independent timers (plus a gentle car-telemetry timer):
-
-| Loop | Interval (config key) | Reads | Writes | Purpose |
-|------|-----------------------|-------|--------|---------|
-| **Live loop** | `livePollSec` (~2 s) | Shelly EM meters + Wall Connector vitals; cached SolaX + weather | — | Recomputes surplus/target from the last known car state, updates `state`, emits an `update` event over SSE. **No Tesla calls.** |
-| **Control loop** | `pollIntervalSec` (~10 s) | the cached car state + last meter reading | Tesla `charge_start` / `charge_stop` / `set_charging_amps` | Makes the charging decision, issues commands, and writes one sample row to SQLite. |
-| **Car loop** | `carPollSec` (~90 s) | Tesla vehicle data (SoC, temps, limits, location, time-to-full) | — | Gentle telemetry refresh so the app doesn't poll/wake the car every control tick. On the Fleet backends it skips the read when the Wall Connector reports the car unplugged. |
-
-The live charging signal (amps / voltage / charging / plugged-in) is taken from the **Wall
-Connector** when available, since it's fast and cloud-independent. The car loop only
-supplies slower telemetry (battery %, limits, ETA, location).
-
-The control loop is **guarded** (`controlBusy`) so the periodic interval and on-demand
-"kicks" never overlap and double-fire Tesla commands. UI actions that should take effect
-immediately (override, mode, ceiling, schedule changes) call `kickControl()` to run an
-out-of-band control cycle right away instead of waiting for the next tick.
-
-### The surplus → amps math
-
-Single-phase, with the voltage read live. Because the car's draw is already inside the grid
-meter reading, the controller adds the current charge power back in to find the total it
-could feed the car while keeping the buffer:
-
 ```
-exportW   = max(0, -gridPower)                       # power currently flowing to the grid
-chargeW   = Wall-Connector power (or estimated from the car)
-surplusW  = exportW + (isCharging ? chargeW : 0) − bufferWatts
-ampCeiling= min(maxAmps, car charge_current_request_max, user maxAmps slider)
-targetAmps= clamp( floor(surplusW / voltage), minAmps, ampCeiling )
+server/
+  index.js          Express app: REST API, SSE stream, static pages, camera proxy, boot
+  config.js         Merges config.json + .env into one validated config object
+  controller.js     Live loop (~2s) + control loop (~10s) + gentle car loop (~90s)
+  shelly.js         Polls the two Shelly EM (Gen1) meters
+  wallconnector.js  Reads the Tesla Wall Connector (Gen 3) local vitals API
+  tesla.js          Car data + commands (TeslaMateApi or Fleet API proxy backend)
+  teslaAuth.js      Tesla Fleet API OAuth third-party-token manager
+  solax.js          SolaX Cloud client (cached)
+  weather.js        Open-Meteo current conditions + 14-day forecast (cached)
+  cameras.js        Agent DVR: reachability, camera discovery, upstream stream/snapshot URLs
+  kasa.js           TP-Link Kasa + Tapo smart plugs (local control, cached)
+  notify.js         Push notifications (ntfy / Pushover / Telegram)
+  stats.js          Aggregations for the statistics panel and charts
+  db.js             SQLite (node:sqlite) sample/session storage
+public/
+  home.html, home.js     Home dashboard
+  index.html, app.js     Tesla charger dashboard
+  tesla.html             Tesla OAuth helper page
+  style.css
+config.json         Non-secret config (IPs, limits, buffers, poll intervals, camera/plug lists)
+.env                Secrets (gitignored) — see .env.example
+data/               SQLite DB + schedule.json (gitignored)
 ```
 
-- **Voltage** is chosen from the best live source: Wall Connector while charging → car
-  charger voltage → grid meter voltage → `control.voltage` fallback.
-- **Start/resume threshold:** charging only starts/resumes once `surplusW ≥ minAmps ×
-  voltage − resumeMarginWatts`. When `stopWhenInsufficient` is on and the surplus drops
-  below that, Auto pauses charging and resumes when the sun returns.
-- **Throttle detection:** if the car is pulling materially fewer amps than commanded **and**
-  the charging voltage is actually sagging (below `throttleVoltage`, default 217 V), it's
-  flagged as a genuine voltage-drop throttle (shown on the dashboard).
-- A minimum step (`minAmpStepChange`) avoids re-commanding the car for trivial 1 A changes,
-  except when a forced rate (override/schedule) is active.
+**Stack:** Node.js ≥ 18 (built-in `node:sqlite`, native `fetch`), Express, `undici`
+(camera proxying), `dotenv`, `tplink-smarthome-api` (Kasa), `tp-link-tapo-connect`
+(Tapo). No build step.
 
 ---
 
-## Integrations
+## The base charger (briefly)
 
-Each source is optional and degrades gracefully — only the **grid** Shelly reading is
-mandatory (the app throws if it can't read it).
+The charger lives at `/charger`. Its job is to keep your Tesla charging on **solar
+surplus** without exporting power you could be using, and without dipping into the
+grid. It reads several data sources, each optional and degrading gracefully:
 
-| Source | Transport | Enable via | Used for |
-|--------|-----------|-----------|----------|
-| **Shelly EM (Gen1) ×2** | local HTTP `GET http://<ip>/status` | `config.json` → `shelly.devices` | grid import/export, per-circuit power/voltage/PF, voltage reference |
-| **Tesla Wall Connector (Gen 3)** | local HTTP `GET http://<ip>/api/1/vitals` | `config.json` → `wallconnector.enabled` + `ip` | live charging amps/voltage/state/session kWh, handle/PCB temps |
-| **Tesla (car data + commands)** | TeslaMateApi LAN HTTP **or** Fleet API | `config.json` → `tesla.backend` (+ `.env`) | set amps, start/stop, SoC, limits, ETA, temps, location |
-| **SolaX inverter** | SolaX Cloud API (cached, rate-limit friendly) | `config.json` → `solax.enabled` + `.env` token | second solar array AC generation |
-| **Growatt inverter** | read via a Shelly clamp channel | `config.json` → `shelly` channel with `role: "solar"` | first solar array generation |
-| **Weather** | Open-Meteo (free, no key) | `config.json` → `weather.enabled` | cloud cover / radiation context at the car's location |
+| Source | Transport | Used for |
+|--------|-----------|----------|
+| Shelly EM (Gen1) ×2 | local HTTP (`/status`) | grid + per-circuit power/voltage/PF (`server/shelly.js`) |
+| Tesla Wall Connector (Gen 3) | local HTTP vitals | live charging amps/voltage/state/plugged (`server/wallconnector.js`) |
+| Tesla (car data + commands) | TeslaMateApi **or** Fleet API proxy | set amps, start/stop, SoC, limits, location |
+| SolaX inverter | SolaX Cloud API | second solar array generation |
+| Growatt inverter | Shelly clamp (real-time) | first solar array generation |
 
-### Tesla backends (data + commands)
+State is held in `controller.js` and pushed to both dashboards over Server-Sent
+Events. Samples and charging sessions are persisted to SQLite for the stats panel and
+charts.
 
-There are **three** command paths, selectable independently for *reads* and *writes*. The
-read backend is set by `tesla.backend` / `TESLA_BACKEND`; the write (command) backend
-defaults to the same value but can be overridden with `tesla.commandBackend` /
-`TESLA_COMMAND_BACKEND`.
+### How the control loop works
 
-| Backend value | Reads (`getVehicleData`) | Commands (`set_charging_amps`, `charge_start/stop`) | What you need |
-|---------------|--------------------------|------------------------------------------------------|---------------|
-| `teslamateapi` *(default)* | TeslaMateApi `/status` over LAN HTTP | TeslaMateApi `/command/*` | A running [TeslaMateApi](https://github.com/tobiasehlert/teslamateapi) with `ENABLE_COMMANDS=true` and `COMMANDS_CHARGING=true`. Reuses TeslaMate's stored tokens & command host — no Tesla tokens needed here. |
-| `proxy` | Fleet API `vehicle_data` (OAuth token) | **signed** vehicle commands via a local `tesla-http-proxy` (`TESLA_PROXY_BASE_URL`) | A Tesla developer app, OAuth (`/api/tesla/login`), and a running `tesla-http-proxy` for the Vehicle Command Protocol. |
-| `fleet` | *(only valid as a command backend)* | direct Fleet API commands (OAuth token, app key already paired to the vehicle — no local signing proxy) | A Tesla developer app + OAuth, with the public key already paired to the car. |
+`controller.js` runs three timers:
 
-Reads use the `proxy` path whenever `backend === 'proxy'`, otherwise TeslaMateApi. Writes
-are dispatched by `commandBackend`: `fleet` → direct Fleet API, `proxy` → signing proxy,
-anything else → TeslaMateApi. A common setup is `backend: "teslamateapi"` for gentle
-DB-backed reads plus `commandBackend: "proxy"` (or `"fleet"`) for signed commands.
+- **Live loop** (`livePollSec`, ~2 s) — reads the Shelly meters and the Wall
+  Connector, refreshes cached sources (SolaX, weather, smart plugs, camera status),
+  recomputes the surplus/target, updates `state`, and emits an `update` event. **No
+  Tesla calls.**
+- **Control loop** (`pollIntervalSec`, ~10 s) — makes the charging decision and sends
+  commands to the car, then persists a sample to SQLite.
+- **Car loop** (`carPollSec`, ~90 s) — gently refreshes car telemetry (battery %,
+  limits, temps, location) so the app doesn't wake/poll the car every cycle.
 
-If no backend is configured (`teslaConfigured()` is false) the app runs **monitor-only**:
-the full dashboard works, but no car commands are sent.
+Single-phase, with the charging voltage read live. The car's draw is already inside
+the grid meter, so:
 
-**Benign command results.** Tesla returns `result:false` with a harmless reason for
-idempotent no-ops (e.g. `charge_start` while already charging). The reasons
-`is_charging`, `not_charging`, `complete`, and `already_set` are treated as success so they
-don't surface as command errors.
+```
+exportW  = max(0, -gridPower)              # power currently flowing to the grid
+surplusW = exportW + chargeW - bufferWatts # power we could feed the car, keeping the buffer
+amps     = clamp(floor(surplusW / voltage), minAmps, ampCeiling)
+```
 
-**Fleet API OAuth.** For the `proxy`/`fleet` backends, authorize once via the
-`/tesla.html` page (or `/api/tesla/login`). Tokens are stored in
-`data/tesla_tokens.json` (gitignored); the access token is refreshed automatically and
-rotated refresh tokens are persisted.
+`ampCeiling` is the lowest of `maxAmps`, the car's reported max, and the user-set auto
+cap. A hysteresis margin (`resumeMarginWatts`) avoids flapping; when surplus can't
+sustain `minAmps` and `stopWhenInsufficient` is on, charging pauses and auto-resumes
+when the sun returns. A manual **override** holds a fixed amperage, and an optional
+**overnight schedule** forces a fixed grid charge inside a time window.
+
+### Tesla backends
+
+Set `tesla.backend` in `config.json`:
+
+- **`teslamateapi`** (default) — point at a running
+  [TeslaMateApi](https://github.com/tobiasehlert/teslamateapi) instance. It reuses
+  your TeslaMate tokens and command host. Configure `TESLAMATEAPI_*` in `.env`.
+- **`proxy`** — talk to the official Fleet API directly through a self-hosted
+  `tesla-http-proxy` for signed commands. Authorize via `/api/tesla/login`, set the
+  `TESLA_*` vars in `.env`.
+
+If neither is configured, the app runs **monitor-only** (full dashboard, no car
+control). For the full charger details, see `public/index.html` and the inline docs in
+`server/controller.js` / `server/tesla.js`.
 
 ---
 
-## Charging behavior & features
+## Home dashboard
 
-| Feature | Behavior | Where |
-|---------|----------|-------|
-| **Auto (solar-following)** | `mode: "auto"` with no override → charges between `minAmps` and the ceiling tracking the live surplus, keeping `bufferWatts` exporting. | `controller.js` `controlCycle` |
-| **Export buffer** | `bufferWatts` is subtracted from the surplus before computing amps, so a margin always flows to the grid. | `control.bufferWatts` |
-| **Override (sticky, live-adjust)** | The **Override** button only turns the forced-charge mode *on* at the slider's value. Once on, **dragging the slider re-tunes the rate live** — no need to press Override again. Changes apply immediately via a control-loop kick. **"Back to auto"** clears the override and returns to solar-following. | `app.js` slider `change` handler + `setOverride`/`clearOverride` |
-| **Override expiry (optional)** | An override may carry `expiresInMin`; the control loop drops it once expired. Shortcuts use this; the dashboard sets a sticky (non-expiring) override. | `controller.js` |
-| **Reliable Stop** | The Start/Stop button's **Stop** is sticky: it clears any override **and** sets `mode: "pause"`, so the control loop won't auto-restart the charge from solar surplus or re-honor a stale override. "Back to auto" (or the Auto mode button) resumes. | `controller.js` `manualCharge('stop')` |
-| **Scheduled overnight grid charge** | A time window (`start`–`end`, wraps past midnight) that forces a fixed grid charge at a chosen amperage, **ignoring solar**. A manual override still takes precedence over the schedule. Persisted to `data/schedule.json`. | `controller.js` `setSchedule`/`isScheduleActive` |
-| **Time-to-full ETA tiles** | When charging, two tiles show **"To `<limit>`%"** (e.g. `1h20m`) and **"Done by"** (an absolute clock time), derived from the Tesla API's `time_to_full_charge`. | `app.js` `renderDetail`, `fmtEta`/`fmtClock` |
-| **Solar-vs-override warning** | While an override is active and charging **slower** than the surplus could sustain (by ≥ `solarFasterMarginAmps`), the dashboard shows a banner. The push notification is edge-triggered: it must persist for `solarFasterSustainSec` (ignores passing clouds) and won't repeat within `solarFasterCooldownMin`. | `controller.js` `maybeWarnSolarFaster`, `setComputed` |
-| **Insufficient-solar pause** | On Auto (no override/schedule) with `stopWhenInsufficient`, charging is held off while plugged in if the surplus can't sustain `minAmps`. Surfaces as a banner and a notification. | `controller.js` |
-| **Push notifications** | Charging start/stop, unplug, insufficient-solar, paused, and the solar-faster warning are pushed instantly via the configured channel (ntfy / Pushover / Telegram). A queue is also drained by Apple Shortcuts via `/api/notify/pending`. | `notify.js`, `controller.js` `recordEvent` |
-| **Dry-run** | With `control.dryRun: true`, the computed amps and decisions run normally but **no commands are sent** to the car (the dashboard shows "dry-run"). | `control.dryRun` |
+### The `/home` page
+
+`public/home.html` + `public/home.js`. A single mobile-first page (iOS-styled "Liquid
+Glass" dark theme, Tailwind via CDN) that connects to `/api/stream` for live updates
+(falling back to polling `/api/state` every 3 s if SSE drops). It renders:
+
+- **Energy summary** — three tiles: **Solar** (kW), **Grid** (W, with an
+  importing/exporting label), and **House** (estimated consumption, kW). Solar is
+  derived from the Growatt Shelly clamp plus SolaX (or the floor-1 channel as a
+  fallback). These come from the shared live state, not extra requests.
+- **Power chart** — a canvas chart of **Export / Solar / Import** with a hover
+  crosshair + tooltip and 1h / 6h / 24h range buttons. Data comes from `/api/series`
+  and refreshes every 20 s.
+- **Weather** — current conditions plus an hourly strip and a 7-day grid; tap for a
+  14-day forecast sheet. From `/api/weather`, refreshed every 10 min.
+- **Cameras** — a responsive grid of tiles. Each tile **polls a JPEG snapshot** (~1
+  fps) rather than holding a permanent MJPEG stream, which avoids exhausting the
+  browser's ~6-connections-per-host limit. Tapping a tile opens a **fullscreen viewer**
+  that is the one live MJPEG stream (full-res, cleared on close). A status line shows
+  "N cameras · Agent DVR live" or "Agent DVR offline".
+- **Smart plugs** — one card per plug with an on/off toggle, live power (W), and
+  voltage / today / total energy where the plug reports it. Plugs flagged with the
+  `water_heater` role show a confirm dialog before switching. Cards reflect optimistic
+  state while a switch is in flight and surface per-plug errors inline.
+
+A `⚡ Tesla` button in the header links to `/charger`.
+
+### Cameras (Agent DVR)
+
+`server/cameras.js` integrates with a local **Agent DVR** server (default
+`http://localhost:8090`). Agent DVR serves a per-camera MJPEG stream at
+`/video.mjpg?oids=<oid>` and a single JPEG at `/grab.jpg?oid=<oid>`.
+
+Key behaviors:
+
+- **Auto-discovery** — cameras are discovered from Agent DVR's
+  `command.cgi?cmd=getObjects`. Objects with `typeID === 2` are cameras; their `id`
+  is the **oid**. The `cameras.list` config is only a fallback (if discovery fails) and
+  a way to override a camera's display name by oid. `cameras.exclude` hides specific
+  oids (e.g. a leftover test camera).
+- **Reachability + discovery in one call** — `refreshStatus()` (run on the
+  `statusPollSec` timer, default 45 s) probes `getObjects`; the result populates both
+  the reachability flag and the discovered camera list. Status (`{ enabled, reachable,
+  count, ts }`) is what the page's status line shows.
+- **Credential safety** — the browser is **never** handed the raw localhost URL or any
+  credentials. The server builds upstream URLs (`upstreamStreamUrl` /
+  `upstreamSnapshotUrl`, optionally with `&un=&pwd=` auth) **server-side only** and
+  exposes proxy routes instead. This is also what makes streams/snapshots work from a
+  phone on the LAN (the phone hits this server; this server reaches Agent DVR on
+  localhost).
+- **Proxy routes** (see [API](#http-api-reference)):
+  - `GET /api/cameras/:oid/stream` pipes the never-ending MJPEG multipart stream
+    through (client timeouts disabled).
+  - `GET /api/cameras/:oid/snapshot` returns a single JPEG via Agent DVR's
+    `/grab.jpg`, falling back to grabbing one frame (SOI `0xFFD8` … EOI `0xFFD9`) from
+    the MJPEG stream if `/grab.jpg` isn't available on that build.
+
+Config block: `cameras.host`, `cameras.auth` (`user`/`pass`), `cameras.snapshotSize`,
+`cameras.statusPollSec`, `cameras.timeoutMs`, `cameras.exclude`, `cameras.list`.
+`CAMERAS_HOST` / `CAMERAS_USER` / `CAMERAS_PASS` in `.env` override host/auth (only
+needed if your Agent DVR requires a login).
+
+### Smart plugs (Kasa + Tapo)
+
+`server/kasa.js` controls TP-Link smart plugs **locally** (no cloud round-trip). Each
+plug picks its protocol via the per-plug `protocol` key:
+
+- **`kasa`** (default) — legacy Kasa HS100 / HS110 / KP115 over TCP port 9999, via
+  `tplink-smarthome-api`. No account needed.
+- **`tapo`** — newer Tapo P100 / P110 / P115 over the **KLAP / secure-passthrough**
+  protocol, via `tp-link-tapo-connect`. This local handshake needs your TP-Link (Tapo)
+  account email and password — **`TAPO_EMAIL` / `TAPO_PASSWORD`** in `.env`. They're
+  used for the local handshake, not a cloud call. Tapo session handles are cached and
+  re-logged-in automatically when they expire. (Legacy Kasa plugs don't need this.)
+
+Key behaviors:
+
+- **Cached reads** — `getCached()` never blocks; it serves the cache and triggers a
+  background `refresh()` when stale (older than `kasa.pollSec`, default 5 s). Reads
+  pull on/off state and, where supported, power (W) and energy (today/total kWh). The
+  live loop folds this cache into the shared state as `state.kasa`.
+- **Control** — `setState(key, on)` switches a plug by its config `key`, rejects plugs
+  marked `controllable: false`, then refreshes so the next `/api/state` + SSE tick
+  reflects the change.
+- **Errors** — per-plug errors are normalized to friendly strings (e.g. "offline /
+  unreachable", "login failed — check TAPO_EMAIL / TAPO_PASSWORD") and shown on the
+  card; one bad plug doesn't break the others.
+
+Config block: `kasa.enabled`, `kasa.pollSec`, `kasa.timeoutMs`, and `kasa.plugs[]`
+(each: `key`, `label`, `ip`, `role`, `controllable`, `protocol`).
+
+### Weather
+
+`server/weather.js` fetches current conditions and a 14-day forecast from
+[Open-Meteo](https://open-meteo.com/) (free, **no API key**). Both are cached
+(current refreshes ~every `pollMin`, forecast ~every `forecastMin`) and key off
+`weather.lat` / `weather.lon` from `config.json` (or the car's location when
+available). WMO weather codes are mapped to an emoji icon + label. Served at
+`/api/weather`.
 
 ---
 
 ## Setup & running
 
-**Requirements:** Node.js **≥ 18** (for built-in `node:sqlite` and `fetch`). No native
-build tools needed.
+**Requirements:** Node.js **≥ 18** (uses built-in `node:sqlite` and native `fetch`).
 
 ```bash
-npm install
-cp .env.example .env      # then fill in your values (Windows: copy .env.example .env)
-# edit config.json — Shelly IPs, Wall Connector IP, control limits, Tesla backend
-npm start                 # production: node server/index.js
-# or
-npm run dev               # auto-restart on changes: node --watch server/index.js
+npm install                       # installs express, undici, dotenv, tplink-smarthome-api, tp-link-tapo-connect
+cp config.json.example config.json # then edit your device IPs / channel map / lists
+cp .env.example .env              # then fill in your values (credentials + WEATHER_LAT/LON)
+npm start                         # serves on http://0.0.0.0:3000 (config.json server.port/host)
 ```
 
-By default the server listens on **`http://0.0.0.0:3000`** (`config.json` → `server.host` /
-`server.port`). Open `http://<this-machine-LAN-IP>:3000` from your phone on the same Wi-Fi,
-and allow inbound TCP on the port through the firewall.
+Open `http://<this-machine-LAN-IP>:3000` on your phone (same Wi-Fi); it lands on the
+home dashboard. Allow inbound TCP 3000 through the firewall for LAN access.
 
-> **Tip:** start with `"dryRun": true` in `config.json` to watch the computed amps without
-> sending any commands to the car. Flip it to `false` once you're satisfied.
+What goes where:
 
-If you use a Fleet backend (`proxy`/`fleet`), open `/tesla.html` once to authorize via OAuth
-before commands will work.
+- **`config.json`** — your device map and settings (IPs, channel map, camera/plug
+  lists, limits). **Gitignored** — it holds your LAN layout, so it's not committed;
+  copy `config.json.example` and edit it for your setup (see the reference below).
+- **`.env`** — credentials only. Copy `.env.example` and fill in. Never commit it
+  (it's gitignored). For the home dashboard you generally only need:
+  - `TAPO_EMAIL` / `TAPO_PASSWORD` — **required if you have any Tapo plugs**.
+  - `CAMERAS_USER` / `CAMERAS_PASS` (and optionally `CAMERAS_HOST`) — only if your
+    Agent DVR requires a login.
+
+> Tip: start the charger with `"dryRun": true` in `config.json` (or `DRY_RUN=1`) to
+> watch computed amps without sending any commands to the car. The home dashboard,
+> cameras, and plugs work regardless of dry-run.
 
 ---
 
 ## Configuration reference
 
-Non-secret settings live in **`config.json`**; secrets and per-host overrides live in
-**`.env`** (copy from `.env.example`). Env vars take precedence over `config.json` for the
-keys they cover.
+### `cameras` (config.json)
 
-### `config.json` — `control` block
+| Key | Type | Default | Purpose |
+|-----|------|---------|---------|
+| `enabled` | bool | `true` | Master switch for the camera feature. |
+| `host` | string | `http://localhost:8090` | Agent DVR base URL. Overridable with `CAMERAS_HOST`. |
+| `auth.user` | string | `""` | Agent DVR username (only if login is required). Overridable with `CAMERAS_USER`. |
+| `auth.pass` | string | `""` | Agent DVR password. Overridable with `CAMERAS_PASS`. |
+| `snapshotSize` | string | `"640x360"` | `size=` query passed to Agent DVR for snapshots/streams (the fullscreen viewer requests `1280x720`). |
+| `statusPollSec` | number | `45` | How often the server probes Agent DVR for reachability + discovery. |
+| `timeoutMs` | number | `5000` | Timeout for the `getObjects` reachability probe. |
+| `exclude` | number[] | `[7]` | Agent DVR oids to hide from the dashboard. |
+| `list` | array | `[]` | Fallback/override list, `[{ oid, name }]`. Used only if auto-discovery fails, or to rename a camera by oid. |
 
-| Key | Default | Meaning |
-|-----|---------|---------|
-| `pollIntervalSec` | `10` | Control-loop interval — how often the car decision/commands run. |
-| `livePollSec` | `2` | Live-loop interval — Shelly + Wall Connector poll and SSE push cadence. |
-| `carPollSec` | `90` | Gentle car-telemetry refresh interval (SoC, temps, limits, ETA). |
-| `voltage` | `230` | Fallback voltage for the amp math when no live voltage is available. |
-| `bufferWatts` | `500` | Export buffer kept flowing to the grid (subtracted from surplus). |
-| `bufferBandLowWatts` | `300` | Reserved hysteresis band knob (present in config). |
-| `bufferBandHighWatts` | `800` | Reserved hysteresis band knob (present in config). |
-| `minAmps` | `5` | Minimum charging amperage; below this the car can't charge. |
-| `maxAmps` | `32` | Hard upper amperage ceiling (also seeds the user "max" slider). |
-| `minAmpStepChange` | `1` | Don't re-command for amp changes smaller than this (unless forced). |
-| `stopWhenInsufficient` | `true` | Pause Auto charging when the surplus can't sustain `minAmps`. |
-| `resumeMarginWatts` | `200` | Slack on the start/resume threshold to avoid flapping at the edge. |
-| `solarFasterMarginAmps` | `2` | Min amps the surplus must beat the override by to warn "solar could charge faster". |
-| `solarFasterSustainSec` | `120` | The warning condition must persist this long before notifying (ignores spikes). |
-| `solarFasterCooldownMin` | `30` | Minimum minutes between solar-faster push notifications. |
-| `dryRun` | `false` | Compute decisions but send **no** Tesla commands. |
+Credentials end up in upstream URLs **server-side only** — they're never sent to the
+browser.
 
-> `throttleVoltage` (default 217 V) is read by the controller for throttle detection; it can
-> be added to the `control` block to tune the sag threshold.
+### `kasa` (config.json)
 
-### `config.json` — other blocks
+| Key | Type | Default | Purpose |
+|-----|------|---------|---------|
+| `enabled` | bool | `true` | Master switch for the smart-plug feature. |
+| `pollSec` | number | `5` | Max age of the plug cache before a background refresh. |
+| `timeoutMs` | number | `3000` | Per-request timeout for legacy Kasa devices. |
+| `plugs` | array | – | List of plugs (see below). |
 
-- **`server`** — `port` (`3000`), `host` (`0.0.0.0`).
-- **`shelly`** — `devices[]` (each with `ip` and a `channels` map of EM index →
-  `{ key, label, role }`; roles: `grid`, `load`, `load_with_solar`, `solar`) and
-  `timeoutMs`. The channel keyed `grid` is mandatory.
-- **`wallconnector`** — `enabled`, `ip`, `timeoutMs`.
-- **`solax`** — `enabled`, `pollSec`, `timeoutMs` (token/serial come from `.env`).
-- **`weather`** — `enabled`, `pollMin`, `lat`, `lon`, `timeoutMs` (falls back to these
-  coordinates when the car location isn't available).
-- **`notify`** — `enabled`, `channel` (`auto` / `ntfy` / `pushover` / `telegram`).
-- **`tesla`** — `backend`, `commandBackend?`, `teslamateapi.{baseUrl,carId}`,
-  `proxyBaseUrl`, `rejectUnauthorized`, `wakeIfAsleep`, `commandRetries`.
-- **`db`** — `path` (SQLite file, default `data/energy.db`), `sampleRetentionDays`.
+Each entry in `kasa.plugs`:
 
-### Environment variables (`.env`)
+| Field | Type | Default | Purpose |
+|-------|------|---------|---------|
+| `key` | string | – | Stable identifier used by `/api/kasa/:key` and the UI. Must be unique. |
+| `label` | string | `key` | Display name on the card. |
+| `ip` | string | – | Plug's LAN IP (not secret). |
+| `role` | string | `"appliance"` | Tag used for the card icon and confirm prompt. `water_heater` shows a 🔥 icon + a confirm dialog before switching. |
+| `controllable` | bool | `true` | If `false`, the toggle is rejected server-side (monitor-only). |
+| `protocol` | string | `"kasa"` | `"kasa"` (legacy, port 9999) or `"tapo"` (KLAP, needs `TAPO_*`). |
 
-All optional unless your chosen backend/feature needs them. Use placeholders — never commit
-real values.
+### Relevant environment variables (`.env`)
 
-**Tesla — TeslaMateApi backend**
+| Var | Used by | Required? | Notes |
+|-----|---------|-----------|-------|
+| `TAPO_EMAIL` | smart plugs | If any `protocol: "tapo"` plug | TP-Link account email for the local KLAP handshake. |
+| `TAPO_PASSWORD` | smart plugs | If any `protocol: "tapo"` plug | TP-Link account password. Used locally, not a cloud round-trip. |
+| `CAMERAS_HOST` | cameras | Optional | Overrides `cameras.host`. |
+| `CAMERAS_USER` | cameras | Only if Agent DVR has a login | Overrides `cameras.auth.user`. |
+| `CAMERAS_PASS` | cameras | Only if Agent DVR has a login | Overrides `cameras.auth.pass`. |
+| `PORT` / `HOST` | server | Optional | Override `server.port` / `server.host`. |
+| `DRY_RUN` | charger | Optional | `1` forces no-command mode (safe for a second/test instance). |
+| `TESLAMATEAPI_*`, `TESLA_*`, `SOLAX_*`, `NTFY_*`, … | charger | Per feature | See `.env.example` for the full base-charger list. |
 
-| Var | Purpose |
-|-----|---------|
-| `TESLA_BACKEND` | `teslamateapi` (default) / `proxy`. Selects the read backend. |
-| `TESLA_COMMAND_BACKEND` | Optional override for *commands*: `teslamateapi` / `proxy` / `fleet`. Defaults to `TESLA_BACKEND`. |
-| `TESLAMATEAPI_BASE_URL` | TeslaMateApi base URL (e.g. `http://localhost:8080`). |
-| `TESLAMATEAPI_CAR_ID` | TeslaMate car id (default `1`). |
-| `TESLAMATEAPI_TOKEN` | TeslaMateApi API token (omit only if it runs with `API_TOKEN_DISABLE=true`). |
-
-**Tesla — Fleet API backend (`proxy` / `fleet`)**
-
-| Var | Purpose |
-|-----|---------|
-| `TESLA_CLIENT_ID` | Tesla developer-app client id. |
-| `TESLA_CLIENT_SECRET` | Tesla developer-app client secret. |
-| `TESLA_VIN` | Vehicle VIN (Fleet command/data path). |
-| `TESLA_REDIRECT_URI` | OAuth redirect URI; must match the app registration (default `http://localhost:3000/api/tesla/callback`). |
-| `TESLA_FLEET_BASE` | Region Fleet API base (EU/NA/CN); also the default OAuth audience. |
-| `TESLA_PROXY_BASE_URL` | Local `tesla-http-proxy` base for signed commands (default `https://localhost:4443`). |
-| `TESLA_AUDIENCE` | OAuth audience override (defaults to `TESLA_FLEET_BASE`). |
-| `TESLA_AUTHORIZE_URL` | OAuth authorize endpoint (default Tesla auth URL). |
-| `TESLA_TOKEN_URL` | OAuth token endpoint (default Fleet auth URL). |
-| `TESLA_SCOPES` | OAuth scopes requested. |
-| `TESLA_REFRESH_TOKEN` | Optional pre-seeded refresh token (normally obtained via `/api/tesla/login`). |
-
-**SolaX Cloud**
-
-| Var | Purpose |
-|-----|---------|
-| `SOLAX_API_URL` | SolaX Cloud base (default `https://global.solaxcloud.com`). |
-| `SOLAX_TOKEN_ID` | SolaX Cloud API `tokenId`. |
-| `SOLAX_WIFI_SN` | SolaX Wi-Fi dongle registration number. |
-
-**Push notifications** (pick one channel; `NOTIFY_CHANNEL` forces it, else auto-detected)
-
-| Var | Purpose |
-|-----|---------|
-| `NOTIFY_CHANNEL` | `auto` (default) / `ntfy` / `pushover` / `telegram`. |
-| `NTFY_TOPIC` | ntfy topic to publish to (use a long random name — it's effectively a password). |
-| `NTFY_SERVER` | ntfy server (default `https://ntfy.sh`). |
-| `NTFY_TOKEN` | ntfy bearer token (only if the topic is access-protected). |
-| `PUSHOVER_TOKEN` / `PUSHOVER_USER` | Pushover app token + user key. |
-| `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` | Telegram bot token + chat id. |
-
-> The `SHELLY_CLOUD_*` vars in `.env.example` are placeholders for an optional historical
-> backfill and are not consumed by the current server code.
+> The `weather`, `solax`, `control`, `tesla`, and `shelly` blocks in `config.json`
+> belong to the base charger. See `.env.example` and the inline comments in
+> `server/config.js` for the full set.
 
 ---
 
 ## HTTP API reference
 
-All endpoints are unauthenticated and intended for the LAN. POST bodies are JSON. Successful
-POSTs return `{ "ok": true, ... }`.
+All routes are defined in `server/index.js`.
 
-| Method | Path | Body / query | Purpose |
-|--------|------|--------------|---------|
-| GET | `/api/state` | – | Live state snapshot (meters, car, Wall Connector, SolaX, weather, computed target, mode, override, schedule). |
-| GET | `/api/stream` | – | Server-Sent Events stream; pushes a fresh snapshot every live-loop tick (~2 s). |
-| GET | `/api/stats` | `?range=day\|week\|month\|today\|session\|all` `&offset=N` | Aggregated statistics (default `today`). `day`/`week`/`month` are calendar periods (weeks start Monday); `offset=N` steps N periods back (0 = current, 1 = previous, …). |
-| GET | `/api/series` | `?hours=N` (1–720) | Downsampled time-series for the chart. |
-| POST | `/api/mode` | `{ "mode": "auto"\|"pause" }` | Switch automation mode (switching to `auto` clears any override). |
-| POST | `/api/override` | `{ "amps": N, "expiresInMin"?: N }` | Set/adjust the sticky forced-charge override (amps clamped to min/max). |
-| POST | `/api/override/clear` | – | Drop the override (back to solar-auto). |
-| POST | `/api/schedule` | `{ "enabled", "start", "end", "amps" }` | Set the overnight grid-charge schedule (persisted). |
-| POST | `/api/maxamps` | `{ "amps": N }` | Set the user auto-ceiling (the slider value when not overriding). |
-| POST | `/api/charge` | `{ "action": "start"\|"stop" }` | Manual start (un-pauses) / sticky stop (clears override + pauses). |
-| GET | `/api/health` | – | Liveness probe: `{ ok, ts }`. |
-| GET | `/api/notify/pending` | – | **Drains** the pending charging-event queue (for Apple Shortcuts polling). |
-| GET | `/api/events` | – | Recent charging events (non-draining). |
-| GET | `/api/notify/test` | – | Fire a test push to verify the configured channel. |
-| GET | `/api/tesla/auth-status` | – | Fleet OAuth status (`authorized`, `configured`, `obtainedAt`). |
-| GET | `/api/tesla/login` | – | Redirect to Tesla's OAuth authorize page. |
-| GET | `/api/tesla/callback` | `?code&state` | OAuth redirect handler; exchanges the code and stores tokens. |
-| POST | `/api/tesla/exchange` | `{ "url" }` or `{ "code", "state"? }` | Manual code exchange (paste the redirected URL/code; used by `/tesla.html`). |
+### Home dashboard
 
-Static files (the dashboard) are served from `public/` (`index.html`, `tesla.html`,
-`app.js`, `style.css`).
+| Method | Path | Body | Purpose |
+|--------|------|------|---------|
+| GET  | `/api/cameras` | – | `{ enabled, status, cameras[] }`. Each camera: `{ oid, name, stream, snapshot }` (proxy URLs only). |
+| GET  | `/api/cameras/:oid/stream` | – | Proxies the live MJPEG stream from Agent DVR (used by the fullscreen viewer). `?size=` optional. |
+| GET  | `/api/cameras/:oid/snapshot` | – | Single JPEG snapshot (used by the tiles, ~1 fps). Falls back to a frame grab. `?size=` optional. |
+| GET  | `/api/kasa` | – | Cached smart-plug state: `{ enabled, plugs[] }`. |
+| POST | `/api/kasa/:key` | `{ on: boolean }` | Switch a plug on/off. Returns the updated plug. |
+| GET  | `/api/weather` | – | `{ current, forecast }` from Open-Meteo. `?lat=&lon=` optional (defaults to config). |
 
----
+### Shared / base charger
 
-## Dashboard tour
+| Method | Path | Body | Purpose |
+|--------|------|------|---------|
+| GET  | `/api/state` | – | Live snapshot (meters, car, WC, SolaX, weather, kasa, cameras, computed target). |
+| GET  | `/api/stream` | – | Server-Sent Events stream of live state (~2 s, plus a 25 s keepalive ping). |
+| GET  | `/api/stats?range=day\|week\|month\|today\|session\|all&offset=N` | – | Aggregated statistics (default `today`). `day`/`week`/`month` are calendar periods (weeks start Monday); `offset=N` steps N periods back (0 = current, 1 = previous, …). |
+| GET  | `/api/series?hours=N` | – | Downsampled time series for charts (N clamped to 1…720). |
+| GET  | `/api/health` | – | `{ ok, ts }`. |
+| GET  | `/api/events` | – | Recent charging events. |
+| GET  | `/api/notify/pending` | – | **Drains** the queued charging notifications (for an Apple Shortcut poller). |
+| GET  | `/api/notify/test` | – | Fires a test push to the configured channel. |
+| POST | `/api/mode` | `{ mode:"auto"\|"pause" }` | Switch automation mode. |
+| POST | `/api/override` | `{ amps, expiresInMin? }` | Hold a manual amperage. |
+| POST | `/api/override/clear` | – | Drop the override. |
+| POST | `/api/schedule` | `{ enabled, start, end, amps }` | Configure the overnight grid-charge window. |
+| POST | `/api/maxamps` | `{ amps }` | Set the auto-charge ceiling. |
+| POST | `/api/charge` | `{ action:"start"\|"stop" }` | Manual start/stop. |
+| GET  | `/api/tesla/auth-status` | – | Tesla Fleet OAuth status. |
+| GET  | `/api/tesla/login` | – | Start the Tesla Fleet OAuth flow (redirect). |
+| GET  | `/api/tesla/callback` | – | OAuth redirect target (exchanges the code). |
+| POST | `/api/tesla/exchange` | `{ code\|url, state? }` | Manual code exchange when the redirect lands elsewhere. |
 
-- **Grid power hero** — current import/export with an **EXPORT vs BUFFER** bar showing how
-  much of the buffer is met and how many amps are free for the car.
-- **Metric cards** — Solar (Growatt + SolaX), Charging (live amps + battery % + ETA +
-  session kWh), Target (what the controller will command, with the reason), Voltage (+ PF).
-- **Power chart** — export / charge / solar / import over 1h / 6h / 24h / 7d with a hover
-  tooltip; the 1h view is live via SSE.
-- **House** — per-circuit power / voltage / current / power factor, plus the SolaX cloud row.
-- **Controls** — Auto/Pause segmented control; the **Override** slider + **Override / Back
-  to auto** buttons; the state-aware **Start / Stop charge** button; the **Overnight charge**
-  schedule card.
-- **Statistics** — Session / Today / All-time tiles.
-- **Vehicle & charging** — cable/charger/cabin/outside temps, battery, range, and the
-  **"To `<limit>`%"** / **"Done by"** ETA tiles.
-- **Banner** — surfaces "Tesla not configured", errors, active override, the solar-faster
-  warning, an active schedule, insufficient-solar pause, and throttle detection.
+See [`shortcuts/README.md`](shortcuts/README.md) for ready-made Apple Shortcuts.
 
 ---
 
-## Data & persistence
+## Running always-on (Windows)
 
-SQLite via Node's built-in `node:sqlite` (no native build). The DB file defaults to
-`data/energy.db` (`db.path`).
-
-- **`samples`** — one row per control cycle (grid/export/import, per-circuit, voltage,
-  charging state, commanded/target amps, charge W, SolaX W, mode, action). Pruned after
-  `db.sampleRetentionDays` (default 60).
-- **`sessions`** — per charging session: energy (Wh) split into solar/grid, peak W/amps,
-  number of adjustments.
-
-Other runtime files in `data/` (all gitignored): `schedule.json` (persisted schedule) and
-`tesla_tokens.json` (Fleet OAuth refresh token).
-
----
-
-## Apple Shortcuts
-
-The LAN HTTP endpoints drive iOS Shortcuts with a single **Get Contents of URL** action —
-resume/pause automation, force a timed override, start/stop, read status, and drain charging
-notifications. See [`shortcuts/README.md`](shortcuts/README.md) for ready-made recipes.
-
----
-
-## Running always-on
-
-On Windows, run it at startup via Task Scheduler ("At log on"/"At startup",
-`node server\index.js`) or a service wrapper such as [NSSM](https://nssm.cc/). Give the
-machine a static DHCP lease so the LAN IP (and your Shortcuts) don't break.
+Use Task Scheduler ("At log on" / "At startup", `node server\index.js`) or a service
+wrapper like [NSSM](https://nssm.cc/). Give the machine a static DHCP lease so the LAN
+IP (and your camera/plug links and Shortcuts) don't break.
 
 ---
 
 ## Security notes
 
-- `.env` (Tesla/SolaX tokens, push keys) and `data/` (the SQLite DB and OAuth tokens) are
-  **gitignored** — keep them that way.
-- The dashboard and REST API have **no authentication**; expose them on your LAN only. For
-  remote access use a VPN/Tailscale, never a public port-forward.
+- `.env` (Tesla tokens, SolaX keys, TP-Link account password, Agent DVR login, push
+  tokens) is **gitignored** — keep it that way.
+- `config.json` (your device IPs, channel map, coordinates were here) is **gitignored** —
+  only `config.json.example` (placeholders) is committed. Home coordinates live in `.env`
+  (`WEATHER_LAT`/`WEATHER_LON`), never in the tracked config.
+- The dashboards and REST API have **no authentication** and the camera proxy will
+  stream anything Agent DVR exposes — expose them on your **LAN only**. For remote
+  access use a VPN / Tailscale, never a public port-forward.
+- `data/` (the SQLite database and `schedule.json`) is gitignored.
 
 ---
 
-## Project layout
+## Further docs
 
-```
-server/
-  index.js         Express app: REST API, SSE stream, OAuth routes, static dashboard, boot
-  config.js        Loads config.json + .env into one merged config object
-  controller.js    Live loop (~2 s) + control loop (~10 s) + car loop (~90 s); surplus → amps
-  shelly.js        Polls the two Shelly EM (Gen1) meters
-  wallconnector.js Reads the Tesla Wall Connector local vitals API (read-only)
-  tesla.js         Car data + commands; teslamateapi / proxy / fleet backends
-  teslaAuth.js     Tesla Fleet API OAuth (authorize, callback, token refresh)
-  solax.js         SolaX Cloud client (cached, rate-limit friendly)
-  weather.js       Open-Meteo current weather (cached)
-  notify.js        Push notifications: ntfy / Pushover / Telegram
-  stats.js         Aggregations for the statistics panel and charts
-  db.js            SQLite (node:sqlite) sample/session storage
-public/
-  index.html       Mobile-first dashboard (Tailwind CDN, iOS "Liquid Glass" styling)
-  app.js           Dashboard logic: SSE, rendering, chart, controls
-  tesla.html       Fleet API OAuth connect/paste helper page
-  style.css        Supplementary styles
-config.json        Non-secret config (IPs, limits, buffers, poll intervals, Tesla backend)
-.env               Secrets (gitignored) — see .env.example
-shortcuts/         Apple Shortcuts recipes (README)
-data/              SQLite DB, schedule.json, tesla_tokens.json (gitignored)
-```
+- [`docs/home-dashboard.md`](docs/home-dashboard.md) — deep dive on cameras, smart
+  plugs, weather, and the `/home` page internals.
+- [`docs/configuration.md`](docs/configuration.md) — full configuration reference for
+  `config.json` and `.env`.
+- [`shortcuts/README.md`](shortcuts/README.md) — Apple Shortcuts for the charger API.

@@ -68,13 +68,12 @@ function applyWeatherBg(w) {
   tryLoad(['jpg', 'png', 'webp']);
 }
 
-let range = 'day';
-let statsOffset = 0; // periods back from current day/week/month (0 = current)
 let lastState = null;
 let bannerDismissed = null; // banner content signature the user tapped away
 let chartData = []; // {ts, exportW, importW, chargeW, solarW}
 let chartHours = 1; // selected chart range in hours
 let WINDOW_MS = 3600_000; // chart window, derived from chartHours
+let geo = null; // { lat, lon } — site location for sunrise/sunset markers
 
 // --- Solar helper -----------------------------------------------------------
 function solarFromMeters(m) {
@@ -112,12 +111,20 @@ function solarTotal(s) {
     if (f1 != null && f1 < 0) w += -f1; // proxy
   }
   // SolaX comes from the cloud and lags during ramps, so the measured total can
-  // read below what's physically leaving the panels. Energy balance: solar ≥
-  // export + charge − import (house load only adds more). Floor by that so export
-  // never looks larger than (solar − charge).
+  // read below what's physically leaving the panels. Energy balance: everything
+  // exported + charging into the car must come from solar (house load only adds
+  // more), so solar ≥ export + charge − import. Floor the display by that to keep
+  // export from ever looking larger than (solar − charge).
   const c = s.computed || {};
-  const floor = Math.max(0, (c.exportW || 0) + (c.chargeW || 0) - (c.importW || 0));
-  return Math.max(w, floor);
+  // Floor by the energy balance, but bound it: Growatt is measured live, only
+  // SolaX lags, so solar can't exceed live Growatt + SolaX's rating. That stops a
+  // polling-skew export/charge spike from inventing huge solar. Final rated cap too.
+  const growatt = m.solarPanels2 < 0 ? -m.solarPanels2 : 0;
+  let floor = Math.max(0, (c.exportW || 0) + (c.chargeW || 0) - (c.importW || 0));
+  if (c.solaxMaxW != null) floor = Math.min(floor, growatt + c.solaxMaxW);
+  let out = Math.max(w, floor);
+  if (c.solarMaxW) out = Math.min(out, c.solarMaxW);
+  return out;
 }
 
 // --- Connection / data source ----------------------------------------------
@@ -153,7 +160,6 @@ function handleState(s) {
   setConn(s.dryRun ? 'ok live' : 'ok live', s.dryRun ? 'dry-run' : 'live');
   renderHero(s);
   renderCards(s);
-  renderMeters(s);
   renderControls(s);
   renderWeather(s);
   renderDetail(s);
@@ -249,8 +255,8 @@ function renderCards(s) {
     $('chargeAmps').textContent = 0;
     cs = connected ? 'plugged in' : 'unplugged';
     if (connected && standbyW > 100) {
-      // Plugged in, not charging, but drawing power for climate/battery conditioning
-      // or Sentry — show the draw so it isn't mistaken for a charge.
+      // Plugged in, not charging, but the car is drawing power for climate/battery
+      // conditioning or Sentry — show the draw so it isn't mistaken for a charge.
       cs += ` · ${climateLabel} · ${comp?.actualAmps != null ? Math.round(comp.actualAmps) + 'A · ' : ''}${fmtW(standbyW)} W`;
     } else {
       cs += potential > 0 ? ` · could charge at ${potential}A from sun` : ' · not enough sun';
@@ -275,53 +281,29 @@ function renderCards(s) {
   $('houseVSub').textContent = gv?.pf != null ? `PF ${gv.pf}` : '';
 }
 
-function renderMeters(s) {
-  const m = s.meters; if (!m) return;
-  const order = ['grid', 'solarPanels2', 'floor1', 'floor2'];
-  const colors = { grid: '#f2f2f7', solarPanels2: '#FFD60A', floor1: '#0A84FF', floor2: '#BF5AF2' };
-  const items = order.filter((k) => m.channels?.[k]).map((k) => {
-    const c = m.channels[k];
-    return { key: k, label: c.label, color: colors[k], power: c.power, voltage: c.voltage, current: c.current, pf: c.pf };
-  });
-  // SolaX (cloud) — generation shown negative; no AC voltage/current/PF in the cloud feed.
-  // Placed just above Growatt (solarPanels2).
-  if (s.solax && s.solax.ok && s.solax.acpower != null) {
-    const row = { label: 'SolaX', color: '#FF9F0A', power: -Math.max(0, s.solax.acpower), voltage: null, current: null, pf: null, cloud: true };
-    const gi = items.findIndex((it) => it.key === 'solarPanels2');
-    if (gi >= 0) items.splice(gi, 0, row); else items.push(row);
-  }
-  const rows = items.map((it, i, arr) => {
-    const neg = it.power < 0;
-    const border = i < arr.length - 1 ? 'hairline-b' : '';
-    const cloudTag = it.cloud ? ' <span class="text-mut text-[10px] font-normal">cloud</span>' : '';
-    return `<div class="grid grid-cols-6 py-3 items-center tnum text-[13.5px] ${border}">
-      <div class="col-span-2 flex items-center gap-2 font-medium"><span class="inline-block w-2 h-2 rounded-full" style="background:${it.color}"></span>${it.label}${cloudTag}</div>
-      <div class="text-right font-semibold" style="color:${neg ? '#30D158' : '#f2f2f7'}">${neg ? '−' : ''}${fmtW(Math.abs(it.power))}</div>
-      <div class="text-right text-mut">${it.voltage ?? '–'}</div>
-      <div class="text-right text-mut">${it.current ?? '–'}</div>
-      <div class="text-right text-mut">${it.pf ?? '–'}</div>
-    </div>`;
-  }).join('');
-  $('metersBody').innerHTML = rows;
-}
-
 const TOGGLE_BASE = 'lg-btn w-full py-4 text-[17px] ';
 function renderControls(s) {
   document.querySelectorAll('#modeSeg button').forEach((b) => b.classList.toggle('active', b.dataset.mode === s.mode));
+  // Paused means paused: hide every control that only acts on a live charge.
+  // Relies on the [hidden] !important rule — Tailwind's .flex on these cards
+  // outranks preflight's [hidden] on its own.
+  const paused = s.mode === 'pause';
+  for (const id of ['limitCard', 'chargeToggle', 'boostCard', 'schedCard']) $(id).hidden = paused;
   const btn = $('chargeToggle');
   if (!btn._busy) {
     if (s.charging) { btn.textContent = '■ Stop charge'; btn.className = TOGGLE_BASE + 'lg-btn-red'; btn.dataset.action = 'stop'; }
     else { btn.textContent = '▶ Start charge'; btn.className = TOGGLE_BASE + 'lg-btn-green'; btn.dataset.action = 'start'; }
   }
 
-  // Sync the slider to what it currently controls: the live override amps while
-  // override mode is on, otherwise the solar-auto ceiling. Skip while dragging.
+  // Sync the slider unless the user is dragging it. While an override is active
+  // the slider tracks the override amps (so live-adjusting it stays put);
+  // otherwise it tracks the auto-ceiling.
   const range = $('ovRange');
   const dragging = document.activeElement === range || (range._touchedAt && Date.now() - range._touchedAt < 4000);
-  const sliderTarget = s.override ? s.override.amps : s.maxAmps;
-  if (!dragging && sliderTarget != null && Number(range.value) !== sliderTarget) {
-    range.value = sliderTarget;
-    $('ovVal').textContent = sliderTarget;
+  const syncVal = s.override ? s.override.amps : s.maxAmps;
+  if (!dragging && syncVal != null && Number(range.value) !== syncVal) {
+    range.value = syncVal;
+    $('ovVal').textContent = syncVal;
   }
 
   // Schedule card (don't clobber inputs the user is editing).
@@ -360,7 +342,7 @@ function renderControls(s) {
     clear.className = 'lg-btn lg-btn-soft flex-1';
     clear.disabled = false;
     clear.style.cssText = '';
-    if (lbl) lbl.textContent = 'Override on — drag to adjust';
+    if (lbl) lbl.textContent = 'Override active';
   } else {
     apply.className = 'lg-btn lg-btn-soft flex-1';
     apply.textContent = 'Override';
@@ -386,9 +368,7 @@ function renderDetail(s) {
   add('Battery', car.batteryLevel != null
     ? `${car.batteryLevel}% · ${(car.batteryLevel / 100 * packKwh).toFixed(1)}` : null, 'kWh');
   add('Range', car.estRangeKm != null ? Math.round(car.estRangeKm) : null, 'km');
-  const charging = s.charging && car.timeToFull > 0;
-  add(`To ${car.chargeLimitSoc || 100}%`, charging ? fmtEta(car.timeToFull) : null);
-  add('Done by', charging ? fmtClock(car.timeToFull) : null);
+  add('To full', s.charging && car.timeToFull > 0 ? fmtEta(car.timeToFull) : null);
 
   if (!tiles.length) { grid.innerHTML = `<div class="text-mut text-[12px] col-span-3 px-1">No vehicle data yet.</div>`; return; }
   grid.innerHTML = tiles.map(([k, v, u]) =>
@@ -421,15 +401,27 @@ function fmtEta(h) {
   return hh ? `${hh}h${mm}m` : `${mm}m`;
 }
 
-// Absolute completion clock time, e.g. "03:45" — h is hours-from-now.
-function fmtClock(h) {
-  if (!h || h <= 0) return '';
-  const d = new Date(Date.now() + h * 3600e3);
-  return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+function staleMessage(s) {
+  const m = s.stale?.meters;
+  if (!m || m.fresh) return null;
+  const since = m.sinceMs ? new Date(m.sinceMs).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
+  return m.reason === 'frozen'
+    ? `⚠ Meters frozen since ${since} — readings stopped changing; not recording or acting on them.`
+    : `⚠ Meters unreachable since ${since} — showing last known values; not recording or acting on them.`;
 }
-
+function backfillMessage(s) {
+  const b = s.backfill;
+  if (!b) return null;
+  if (b.running) return '⏳ Recovering meter history from the Shelly EM log…';
+  if (b.last && !b.last.error && Date.now() - b.last.at < 10 * 60_000) return `✅ Recovered ${b.last.rows} rows of meter history.`;
+  if (b.last && b.last.error && b.pending) return `⚠ Meter history recovery failed (${b.last.error}); retrying.`;
+  return null;
+}
 function renderBanner(s) {
   const b = $('banner'); const comp = s.computed; const msgs = [];
+  const stale = staleMessage(s); if (stale) msgs.push(stale);
+  const bf = backfillMessage(s); if (bf) msgs.push(bf);
+  document.body.classList.toggle('stale', Boolean(stale));
   if (!s.teslaConfigured) msgs.push('Tesla not configured — set TESLA*/TESLAMATEAPI* in .env. Monitoring only.');
   if (s.lastError && s.lastError.includes('Unable to load cars')) {
     msgs.push('⚠ TeslaMateApi can’t run commands — set ENCRYPTION_KEY (matching TeslaMate) on the TeslaMateApi container and restart it.');
@@ -437,7 +429,6 @@ function renderBanner(s) {
     msgs.push('⚠ ' + s.lastError);
   }
   if (s.override) msgs.push(`Override: holding ${s.override.amps}A` + (s.override.expiresAt ? ` until ${new Date(s.override.expiresAt).toLocaleTimeString()}` : ''));
-  if (comp?.solarCouldChargeFaster && s.override) msgs.push(`☀️ Solar could charge faster — surplus supports ${comp.potentialAmps}A vs your ${s.override.amps}A override. Tap “Auto” to use the free solar.`);
   if (comp?.scheduleActive) msgs.push(`🌙 Scheduled charge active — charging from grid at ${s.schedule?.amps}A.`);
   if (s.fullCharge) msgs.push(`🔋 Car fully charged — automatic charging paused until you start a charge or the battery drops to ${s.fullResumeSoc ?? 92}%.`);
   if (comp?.insufficientSolar && !s.fullCharge) msgs.push('⛅ Charging stopped — not enough solar energy.');
@@ -463,7 +454,9 @@ function pushChartPoint(s) {
   const now = s.ts;
   const last = chartData[chartData.length - 1];
   if (last && now - last.ts < 1500) return; // throttle
-  chartData.push({ ts: now, exportW: Math.max(0, c.exportW || 0), importW: Math.max(0, c.importW || 0), chargeW: Math.max(0, c.chargeW || 0), solarW: solarTotal(s) });
+  const solarW = solarTotal(s);
+  const houseW = Math.max(0, solarW + (c.importW || 0) - (c.exportW || 0) - (c.chargeW || 0));
+  chartData.push({ ts: now, exportW: Math.max(0, c.exportW || 0), importW: Math.max(0, c.importW || 0), chargeW: Math.max(0, c.chargeW || 0), solarW, houseW });
   const cut = now - WINDOW_MS;
   chartData = chartData.filter((p) => p.ts >= cut);
   drawChart();
@@ -472,45 +465,130 @@ function pushChartPoint(s) {
 async function loadChartHistory() {
   try {
     const series = await (await fetch('/api/series?hours=' + chartHours)).json();
-    chartData = series.map((p) => ({ ts: p.ts, exportW: Math.max(0, p.exportW || 0), importW: Math.max(0, p.gridPower || 0), chargeW: Math.max(0, p.chargeW || 0), solarW: solarFromSeries(p) }));
+    chartData = series.map((p) => {
+      if (p.gap) return { ts: p.ts, gap: true };
+      const exportW = Math.max(0, p.exportW || 0), importW = Math.max(0, p.gridPower || 0), chargeW = Math.max(0, p.chargeW || 0);
+      const solarW = solarFromSeries(p);
+      return { ts: p.ts, exportW, importW, chargeW, solarW, houseW: Math.max(0, solarW + importW - exportW - chargeW) };
+    });
     drawChart();
   } catch {}
 }
 
 const CH = { W: 600, H: 220, pad: 8 };
 let chartScale = null;
+
+// --- Sun position (compact NOAA/SunCalc port) --------------------------------
+// Returns absolute epoch-ms sunrise/sunset for the calendar day containing `date`
+// at the given lat/lon. NaN on polar day/night — callers guard.
+const SUN = (() => {
+  const rad = Math.PI / 180, dayMs = 86400_000, J1970 = 2440588, J2000 = 2451545;
+  const e = rad * 23.4397; // obliquity of the ecliptic
+  const toDays = (d) => d.valueOf() / dayMs - 0.5 + J1970 - J2000;
+  const fromJ = (j) => (j + 0.5 - J1970) * dayMs;
+  const meanAnomaly = (d) => rad * (357.5291 + 0.98560028 * d);
+  const eclipticLng = (M) => M + rad * (1.9148 * Math.sin(M) + 0.02 * Math.sin(2 * M) + 0.0003 * Math.sin(3 * M)) + rad * 102.9372 + Math.PI;
+  const declination = (L) => Math.asin(Math.sin(e) * Math.sin(L));
+  const J0 = 0.0009;
+  const transitJ = (ds, M, L) => J2000 + ds + 0.0053 * Math.sin(M) - 0.0069 * Math.sin(2 * L);
+  return function sunTimes(date, lat, lon) {
+    const lw = rad * -lon, phi = rad * lat, d = toDays(date);
+    const n = Math.round(d - J0 - lw / (2 * Math.PI));
+    const ds = J0 + lw / (2 * Math.PI) + n;
+    const M = meanAnomaly(ds), L = eclipticLng(M), dec = declination(L);
+    const Jnoon = transitJ(ds, M, L);
+    const h0 = -0.833 * rad; // apparent horizon incl. refraction
+    const w = Math.acos((Math.sin(h0) - Math.sin(phi) * Math.sin(dec)) / (Math.cos(phi) * Math.cos(dec)));
+    const Jset = transitJ(J0 + (w + lw) / (2 * Math.PI) + n, M, L);
+    return { sunrise: fromJ(Jnoon - (Jset - Jnoon)), sunset: fromJ(Jset) };
+  };
+})();
+
+const dayMsC = 86400_000;
+
+// Local midnight (00:00 site-local) for the day containing epoch-ms `t`.
+function localMidnight(t) {
+  const d = new Date(t);
+  d.setHours(0, 0, 0, 0);
+  return d.getTime();
+}
+
+// Build the day-separator + night-shading + sunrise/sunset marker layers for the
+// visible window [x0,x1]. Returns { back, front } SVG strings so callers can put
+// shading behind the data lines and markers/labels on top.
+function daynightLayers(x0, x1, sx) {
+  const { W, H, pad } = CH;
+  const clipX = (t) => Math.max(pad, Math.min(W - pad, sx(t)));
+  let back = '', front = '';
+  const span = x1 - x0;
+  const showSun = geo && Number.isFinite(geo.lat) && Number.isFinite(geo.lon) && span <= 8 * dayMsC;
+  // Walk each local calendar day that overlaps the window.
+  for (let day = localMidnight(x0); day <= x1; day += dayMsC) {
+    const dayEnd = day + dayMsC;
+    // Day separator: faint vertical line + date label at each local midnight in view.
+    if (day > x0 && day < x1) {
+      const x = sx(day).toFixed(1);
+      back += `<line x1="${x}" y1="${pad}" x2="${x}" y2="${H - pad}" stroke="#8499bd" stroke-width="1" stroke-dasharray="2 3" opacity="0.35"/>`;
+      front += `<text x="${(sx(day) + 3).toFixed(1)}" y="${H - pad - 3}" fill="#8499bd" font-size="9" opacity="0.7">${new Date(day).toLocaleDateString(undefined, { day: 'numeric', month: 'short' })}</text>`;
+    }
+    if (!showSun) continue;
+    const { sunrise, sunset } = SUN(new Date(day + dayMsC / 2), geo.lat, geo.lon);
+    // Night shading: dark bands from day-start→sunrise and sunset→day-end (clipped).
+    const band = (a, b) => {
+      const xa = clipX(a), xb = clipX(b);
+      if (xb - xa < 0.5) return '';
+      return `<rect x="${xa.toFixed(1)}" y="${pad}" width="${(xb - xa).toFixed(1)}" height="${H - 2 * pad}" fill="#0a1220" opacity="0.28"/>`;
+    };
+    if (Number.isFinite(sunrise)) back += band(Math.max(x0, day), Math.min(x1, sunrise));
+    if (Number.isFinite(sunset)) back += band(Math.max(x0, sunset), Math.min(x1, dayEnd));
+    // Sunrise / sunset marker lines + glyphs (only when they fall inside the window).
+    const mark = (t, glyph) => {
+      if (!Number.isFinite(t) || t < x0 || t > x1) return;
+      const x = sx(t);
+      front += `<line x1="${x.toFixed(1)}" y1="${pad}" x2="${x.toFixed(1)}" y2="${H - pad}" stroke="#fbbf24" stroke-width="1" opacity="0.5"/>`
+        + `<text x="${x.toFixed(1)}" y="${pad + 11}" fill="#fbbf24" font-size="11" text-anchor="middle" opacity="0.95">${glyph}</text>`;
+    };
+    mark(sunrise, '🌅');
+    mark(sunset, '🌇');
+  }
+  return { back, front };
+}
 function drawChart() {
   const svg = $('chart');
   if (chartData.length < 2) { svg.innerHTML = '<text x="10" y="20" fill="#8499bd" font-size="12">collecting data…</text>'; return; }
   const { W, H, pad } = CH;
   const xs = chartData.map((p) => p.ts);
   const x0 = xs[0], x1 = xs[xs.length - 1] || x0 + 1;
-  const max = Math.max(100, ...chartData.map((p) => Math.max(p.exportW, p.chargeW, p.solarW, p.importW || 0)));
+  const max = Math.max(100, ...chartData.filter((p) => !p.gap).map((p) => Math.max(p.exportW, p.chargeW, p.solarW, p.importW || 0)));
   const sx = (t) => pad + ((t - x0) / (x1 - x0 || 1)) * (W - 2 * pad);
   const sy = (v) => H - pad - (v / max) * (H - 2 * pad);
   chartScale = { x0, x1, max, sx, sy };
-  const line = (key, color) => {
-    const d = chartData.map((p, i) => `${i ? 'L' : 'M'}${sx(p.ts).toFixed(1)},${sy(p[key]).toFixed(1)}`).join(' ');
-    return `<path d="${d}" fill="none" stroke="${color}" stroke-width="2" stroke-linejoin="round"/>`;
-  };
-  const area = (key, color) => {
-    const top = chartData.map((p, i) => `${i ? 'L' : 'M'}${sx(p.ts).toFixed(1)},${sy(p[key]).toFixed(1)}`).join(' ');
-    return `<path d="${top} L${sx(x1).toFixed(1)},${H - pad} L${sx(x0).toFixed(1)},${H - pad} Z" fill="${color}" opacity="0.10"/>`;
-  };
+  // A gap marker (server-side hole in the history) ends the current run so
+  // an outage shows as a break, not a straight bridge across it.
+  const runs = [];
+  for (const p of chartData) { if (p.gap) { runs.push([]); continue; } if (!runs.length) runs.push([]); runs[runs.length - 1].push(p); }
+  const pathFor = (pts, key) => pts.map((p, i) => `${i ? 'L' : 'M'}${sx(p.ts).toFixed(1)},${sy(p[key]).toFixed(1)}`).join(' ');
+  const line = (key, color) => runs.filter((r) => r.length).map((r) =>
+    `<path d="${pathFor(r, key)}" fill="none" stroke="${color}" stroke-width="2" stroke-linejoin="round"/>`).join('');
+  const area = (key, color) => runs.filter((r) => r.length > 1).map((r) =>
+    `<path d="${pathFor(r, key)} L${sx(r[r.length - 1].ts).toFixed(1)},${H - pad} L${sx(r[0].ts).toFixed(1)},${H - pad} Z" fill="${color}" opacity="0.10"/>`).join('');
   // gridlines (25/50/75%)
   let grid = '';
   for (const f of [0.25, 0.5, 0.75]) { const y = sy(max * f); grid += `<line x1="${pad}" y1="${y}" x2="${W - pad}" y2="${y}" stroke="#1f2c47" stroke-width="1"/>`; }
-  svg.innerHTML = grid
+  // Night shading + day separators (behind data) and sunrise/sunset markers (on top).
+  const dn = daynightLayers(x0, x1, sx);
+  svg.innerHTML = dn.back + grid
     + area('solarW', '#fbbf24') + line('solarW', '#fbbf24')
     + area('exportW', '#34d399') + line('exportW', '#34d399')
     + area('importW', '#FF453A') + line('importW', '#FF453A')
     + line('chargeW', '#60a5fa')
+    + dn.front
     + `<text x="${pad}" y="14" fill="#8499bd" font-size="11">${Math.round(max)} W</text>`;
 }
 
 // Hover / touch tooltip
 const box = $('chartBox'), tip = $('tooltip'), cross = $('crosshair');
-function onHover(clientX, clientY) {
+function onHover(clientX) {
   if (!chartScale || chartData.length < 2) return;
   const rect = box.getBoundingClientRect();
   const px = clientX - rect.left;
@@ -518,72 +596,50 @@ function onHover(clientX, clientY) {
   const t = chartScale.x0 + tFrac * (chartScale.x1 - chartScale.x0);
   // nearest point
   let best = chartData[0], bd = Infinity;
-  for (const p of chartData) { const d = Math.abs(p.ts - t); if (d < bd) { bd = d; best = p; } }
+  for (const p of chartData) { if (p.gap) continue; const d = Math.abs(p.ts - t); if (d < bd) { bd = d; best = p; } }
+  if (best.gap) return;
   const xpx = (chartScale.sx(best.ts) / CH.W) * rect.width;
   cross.style.left = xpx + 'px'; cross.hidden = false;
   tip.hidden = false;
-  // Fill content first so we can measure the box for vertical clamping.
+  tip.style.left = clampN(xpx, 50, rect.width - 50) + 'px';
+  tip.style.top = '8px';
   tip.innerHTML = `<div class="t-time">${new Date(best.ts).toLocaleTimeString()}</div>`
     + `<div class="t-row"><i style="background:#34d399"></i>export ${fmtW(best.exportW)} W</div>`
     + `<div class="t-row"><i style="background:#60a5fa"></i>charge ${fmtW(best.chargeW)} W</div>`
     + `<div class="t-row"><i style="background:#fbbf24"></i>solar ${fmtW(best.solarW)} W</div>`
     + `<div class="t-row"><i style="background:#FF453A"></i>import ${fmtW(best.importW || 0)} W</div>`;
-  tip.style.left = clampN(xpx, 60, rect.width - 60) + 'px';
-  // Float above the cursor, but flip below it (and clamp) if that would clip the top —
-  // so the tooltip never escapes up into the range buttons above the chart.
-  const th = tip.offsetHeight;
-  const py = clientY != null ? clientY - rect.top : rect.height / 2;
-  let top = py - th - 14;
-  if (top < 4) top = py + 18;
-  tip.style.top = clampN(top, 4, Math.max(4, rect.height - th - 4)) + 'px';
 }
 function hideHover() { tip.hidden = true; cross.hidden = true; }
-box.addEventListener('mousemove', (e) => onHover(e.clientX, e.clientY));
+box.addEventListener('mousemove', (e) => onHover(e.clientX));
 box.addEventListener('mouseleave', hideHover);
-box.addEventListener('touchstart', (e) => onHover(e.touches[0].clientX, e.touches[0].clientY), { passive: true });
-box.addEventListener('touchmove', (e) => onHover(e.touches[0].clientX, e.touches[0].clientY), { passive: true });
+box.addEventListener('touchstart', (e) => onHover(e.touches[0].clientX), { passive: true });
+box.addEventListener('touchmove', (e) => onHover(e.touches[0].clientX), { passive: true });
 box.addEventListener('touchend', hideHover);
 
 // --- Stats ------------------------------------------------------------------
-const PERIOD_RANGES = ['day', 'week', 'month'];
-
-function periodLabel(st) {
-  if (!PERIOD_RANGES.includes(st.range)) return '';
-  const since = new Date(st.since);
-  if (st.range === 'day') {
-    if (st.offset === 0) return 'Today';
-    if (st.offset === 1) return 'Yesterday';
-    return since.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' });
+// period-nav.js is a separate <script> that may fail to load (stale iOS
+// home-screen cache, blocked request, etc). Guard the call so a missing/
+// throwing createPeriodNav can never halt this script — the charging
+// controls wired below must always initialize.
+let statsNav = null;
+try {
+  if (typeof createPeriodNav === 'function') {
+    statsNav = createPeriodNav({
+      navEl: $('periodNav'), labelEl: $('periodLabel'),
+      prevEl: $('periodPrev'), nextEl: $('periodNext'), segEl: $('rangeSeg'),
+      onData: (st) => { lastStatsForFuel = st; renderStats(st); renderFuel(st); },
+    });
+  } else {
+    console.error('period-nav.js did not load — stats navigation disabled');
   }
-  if (st.range === 'week') {
-    if (st.offset === 0) return 'This week';
-    const end = new Date(st.until - 86400_000);
-    const s = since.toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
-    const e = end.toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
-    return `${s} – ${e}`;
-  }
-  if (st.offset === 0) return 'This month';
-  return since.toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
+} catch (e) {
+  console.error('period nav init failed', e);
 }
+const refreshStats = () => { if (statsNav) statsNav.refresh(); };
 
-async function refreshStats() {
-  let st;
-  try {
-    st = await (await fetch(`/api/stats?range=${range}&offset=${statsOffset}`)).json();
-  } catch { return; }
-  // Stale response from a range/offset the user already navigated away from.
-  if (st.range !== range || (PERIOD_RANGES.includes(range) && st.offset !== statsOffset)) return;
-
-  const isPeriod = PERIOD_RANGES.includes(range);
-  $('periodNav').hidden = !isPeriod;
-  if (isPeriod) {
-    $('periodLabel').textContent = periodLabel(st);
-    $('periodNext').disabled = statsOffset === 0;
-    $('periodNext').style.opacity = statsOffset === 0 ? '.35' : '1';
-  }
-
+// Car-focused tiles only — the whole-home totals live on the home dashboard.
+function renderStats(st) {
   const c = st.car || {};
-  const h = st.home || {};
   const cells = [
     ['Charged', fmtKwh(c.energyWh), 'kWh'],
     ['Using solar', fmtKwh(c.solarWh), 'kWh'],
@@ -593,11 +649,9 @@ async function refreshStats() {
     ['Peak amps', c.peakAmps || 0, 'A'],
     ['Charge time', fmtDur(c.chargingMinutes), ''],
     ['Adjusts', c.adjustments || 0, ''],
-    ['Solar gen', fmtKwh(h.solarGeneratedWh), 'kWh'],
-    ['Exported', fmtKwh(h.exportedWh), 'kWh'],
-    ['Imported', fmtKwh(h.importedWh), 'kWh'],
-    ['Home used', fmtKwh(h.usedWh), 'kWh'],
   ];
+  // Marginal cost of the grid energy that charged the car (VAT-inclusive).
+  if (st.chargeCost) cells.push(['Charge cost', st.chargeCost.total.toFixed(2), st.chargeCost.currency]);
   $('statsGrid').innerHTML = cells.map(([k, v, u]) =>
     `<div class="glass rounded-2xl p-3.5 flex flex-col gap-1">
        <span class="text-[10px] font-semibold text-mut uppercase tracking-wider">${k}</span>
@@ -606,26 +660,52 @@ async function refreshStats() {
 }
 function fmtDur(min) { if (!min) return '0m'; const h = Math.floor(min / 60), m = min % 60; return h ? `${h}h ${m}m` : `${m}m`; }
 
+// --- Efficiency & fuel ------------------------------------------------------
+// km the charge is worth (chargedKwh ÷ avgWhPerKm) and what those km would cost
+// in petrol vs what the grid charge actually cost. Never a driven-distance sum.
+let fuelInfo = null;        // { whPerKm, whPerKmEstimated, price, iceLPer100, ... }
+let lastStatsForFuel = null; // last /api/stats payload, for re-render when fuel loads
+function fuelTile(k, v, u) {
+  return `<div class="glass rounded-2xl p-3.5 flex flex-col gap-1">
+       <span class="text-[10px] font-semibold text-mut uppercase tracking-wider">${k}</span>
+       <span class="text-[15px] font-bold tnum">${v}<span class="text-[11px] font-normal text-mut"> ${u}</span></span>
+     </div>`;
+}
+function renderFuel(st) {
+  const grid = $('fuelGrid');
+  if (!grid) return;
+  const note = $('fuelNote');
+  const f = fuelInfo;
+  if (!f) {
+    grid.innerHTML = ['Wh/km', 'Charged km', 'Petrol cost', 'Saved vs petrol']
+      .map((k) => fuelTile(k, '—', '')).join('');
+    if (note) note.textContent = '';
+    return;
+  }
+  const energyWh = st?.car?.energyWh || 0;
+  const wh = f.whPerKm > 0 ? f.whPerKm : 200;
+  const km = energyWh / wh;                       // Wh ÷ (Wh/km) = km
+  const petrol = (km / 100) * f.iceLPer100 * f.price;
+  const elec = st?.chargeCost ? st.chargeCost.total : null; // grid charge cost (solar free)
+  const saved = elec != null ? petrol - elec : null;
+  grid.innerHTML = [
+    ['Wh/km', (f.whPerKmEstimated ? '~' : '') + Math.round(wh), ''],
+    ['Charged km', km >= 100 ? km.toFixed(0) : km.toFixed(1), 'km'],
+    ['Petrol cost', petrol.toFixed(2), '€'],
+    ['Saved vs petrol', saved != null ? saved.toFixed(2) : '–', saved != null ? '€' : ''],
+  ].map(([k, v, u]) => fuelTile(k, v, u)).join('');
+  if (note) {
+    const d = f.priceDate ? ` · upd ${f.priceDate}` : '';
+    const stale = f.priceStale ? ' (est.)' : '';
+    note.textContent = `98 @ ${f.price.toFixed(3)} €/L · ${f.priceScope} avg${stale}${d} · saved vs grid charge cost (solar is free)`;
+  }
+}
+
 // --- Controls wiring --------------------------------------------------------
 async function post(path, body) {
   return (await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined })).json();
 }
 document.querySelectorAll('#modeSeg button').forEach((b) => b.addEventListener('click', () => post('/api/mode', { mode: b.dataset.mode })));
-document.querySelectorAll('#rangeSeg button').forEach((b) => b.addEventListener('click', () => {
-  range = b.dataset.range;
-  statsOffset = 0;
-  document.querySelectorAll('#rangeSeg button').forEach((x) => x.classList.toggle('active', x === b));
-  refreshStats();
-}));
-// Matches the server's clamp — past it the response would echo a different offset
-// and refreshStats' stale-response guard would drop every update.
-const MAX_OFFSET = 1000;
-$('periodPrev').addEventListener('click', () => {
-  if (statsOffset < MAX_OFFSET) { statsOffset++; refreshStats(); }
-});
-$('periodNext').addEventListener('click', () => {
-  if (statsOffset > 0) { statsOffset--; refreshStats(); }
-});
 function postSchedule() {
   post('/api/schedule', {
     enabled: $('schedEnabled').checked,
@@ -648,17 +728,25 @@ document.querySelectorAll('#chartRangeSeg button').forEach((b) => b.addEventList
 // Keep longer ranges fresh (the 1h range stays live via the SSE stream).
 setInterval(() => { if (chartHours > 1) loadChartHistory(); }, 30000);
 
-$('ovRange').addEventListener('input', (e) => { $('ovVal').textContent = e.target.value; e.target._touchedAt = Date.now(); });
-// Releasing the slider applies its value. With override mode on it live-adjusts the
-// forced charge amps (no need to re-press Override); otherwise it sets the solar-auto
-// ceiling (auto charges between 5A and this value).
+let ovSlideTimer = null;
+$('ovRange').addEventListener('input', (e) => {
+  $('ovVal').textContent = e.target.value;
+  e.target._touchedAt = Date.now();
+  // While an override is active, re-apply it at the new value ~700ms after the
+  // user stops sliding — no need to press Override again.
+  if (lastState?.override) {
+    clearTimeout(ovSlideTimer);
+    ovSlideTimer = setTimeout(() => post('/api/override', { amps: Number(e.target.value) }), 700);
+  }
+});
+// Releasing the slider: if overriding, update the override; otherwise set the
+// auto ceiling (auto charges between 5A and this value).
 $('ovRange').addEventListener('change', (e) => {
+  clearTimeout(ovSlideTimer);
   const amps = Number(e.target.value);
   if (lastState?.override) post('/api/override', { amps });
   else post('/api/maxamps', { amps });
 });
-// The Override button only turns override mode ON (forces a charge at the current
-// slider value); the slider then adjusts the rate live. "Back to auto" turns it off.
 $('ovApply').addEventListener('click', () => post('/api/override', { amps: Number($('ovRange').value) }));
 $('ovClear').addEventListener('click', () => post('/api/override/clear'));
 $('chargeToggle').addEventListener('click', () => charge($('chargeToggle').dataset.action || 'start'));
@@ -677,7 +765,20 @@ $('ic-charge').innerHTML = icon('bolt', 20);
 $('ic-target').innerHTML = icon('target', 20);
 $('ic-volt').innerHTML = icon('gauge', 20);
 
+// Load site location once, then (re)draw so sun markers appear.
+fetch('/api/config').then((r) => r.json()).then((c) => {
+  if (Number.isFinite(c?.lat) && Number.isFinite(c?.lon)) { geo = c; drawChart(); }
+}).catch(() => {});
+
+// Fuel comparison inputs (avg Wh/km + 98 price) change ~daily — fetch once and
+// re-render the fuel tiles against the last stats payload when it arrives.
+renderFuel(null); // placeholder tiles until the fetch resolves
+fetch('/api/fuel').then((r) => r.json()).then((f) => {
+  fuelInfo = f;
+  if (lastStatsForFuel) renderFuel(lastStatsForFuel);
+}).catch(() => {});
+
 loadChartHistory();
 refreshStats();
 connect();
-setInterval(refreshStats, 15000);
+// Stats polling + refresh-on-wake live inside createPeriodNav (period-nav.js).

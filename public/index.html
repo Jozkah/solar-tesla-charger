@@ -26,6 +26,8 @@
   body { background:#050505; color:#f2f2f7; font-family:'Inter',-apple-system,BlinkMacSystemFont,sans-serif; -webkit-font-smoothing:antialiased; min-height:100dvh; }
   /* Clear the status bar / notch when added to the Home Screen (standalone PWA). */
   header { padding-top: env(safe-area-inset-top); }
+  /* Live power numbers dim while the server reports the meters stale. */
+  body.stale :is(#gridPower, #flow) { opacity:.45; }
   /* iOS 26 "Liquid Glass" surface: translucent, blurred, vibrant, with a top specular highlight */
   /* Solid card (no backdrop-filter). Over the near-black background the blur was
      barely visible, and removing it eliminates the Chromium scroll "streak" where

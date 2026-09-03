@@ -25,6 +25,8 @@
 <style>
   body { background:#050505; color:#f2f2f7; font-family:'Inter',-apple-system,BlinkMacSystemFont,sans-serif; -webkit-font-smoothing:antialiased; min-height:100dvh; overscroll-behavior-y:none; }
   header { padding-top: env(safe-area-inset-top); }
+  /* Live power numbers dim while the server reports the meters stale. */
+  body.stale :is(#solar, #house, #car, #grid, #gridVal) { opacity:.45; }
   /* Solid card (no backdrop-filter). Over the near-black background the blur was
      barely visible, and removing it eliminates the Chromium scroll "streak" where
      tiles smeared the fixed glow — the same fix already used for .chart-card. */
@@ -128,6 +130,9 @@
 </header>
 
 <main class="px-5 pt-5 flex flex-col gap-6 max-w-[720px] mx-auto">
+
+  <!-- Stale meters / history recovery notice (server-driven, see renderStale) -->
+  <section id="staleBanner" class="text-amber-200 text-[13px] rounded-2xl px-4 py-3" style="background:rgba(120,70,30,.35);border:1px solid rgba(180,100,50,.4)" hidden></section>
 
   <!-- Settings (tariff & billing) -->
   <div class="flex justify-end -mb-2">

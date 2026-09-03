@@ -100,6 +100,24 @@ export function recordSample(s) {
   );
 }
 
+// Backfill rows must never clobber a live sample: INSERT OR IGNORE keeps the
+// row that was recorded from the real poll if one already exists at that ts.
+// Returns 1 when a row was written, 0 when one was already there.
+const insertSampleIgnore = db.prepare(`
+  INSERT OR IGNORE INTO samples
+    (ts, grid_power, export_w, import_w, solar2_w, floor1_w, floor2_w, voltage,
+     charging, charge_amps, target_amps, charge_w, solax_w, mode, action)
+  VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+`);
+export function recordSampleIgnore(s) {
+  const r = insertSampleIgnore.run(
+    s.ts, nz(s.gridPower), nz(s.exportW), nz(s.importW), nz(s.solarPanels2), nz(s.floor1W), nz(s.floor2W),
+    nz(s.voltage), s.charging ? 1 : 0, intOrNull(s.chargeAmps), intOrNull(s.targetAmps), nz(s.chargeW), nz(s.solaxW),
+    s.mode || null, s.action || null
+  );
+  return r.changes;
+}
+
 // --- Session management -----------------------------------------------------
 
 const getOpenSession = db.prepare('SELECT * FROM sessions WHERE ended_at IS NULL ORDER BY id DESC LIMIT 1');
@@ -229,6 +247,13 @@ export const queries = {
   firstRollupDay: db.prepare('SELECT MIN(day_ts) AS day_ts FROM daily_stats'),
   firstSampleTs: db.prepare('SELECT MIN(ts) AS ts FROM samples'),
 };
+
+// Drop a persisted day so the next read recomputes it from samples — used
+// after a backfill adds history to a day that was already rolled up.
+const deleteDayRollupStmt = db.prepare('DELETE FROM daily_stats WHERE day_ts = ?');
+export function deleteDayRollup(dayTs) {
+  return deleteDayRollupStmt.run(dayTs).changes;
+}
 
 const pruneStmt = db.prepare('DELETE FROM samples WHERE ts < ?');
 export function pruneOld() {

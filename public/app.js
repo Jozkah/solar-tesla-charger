@@ -401,8 +401,27 @@ function fmtEta(h) {
   return hh ? `${hh}h${mm}m` : `${mm}m`;
 }
 
+function staleMessage(s) {
+  const m = s.stale?.meters;
+  if (!m || m.fresh) return null;
+  const since = m.sinceMs ? new Date(m.sinceMs).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
+  return m.reason === 'frozen'
+    ? `⚠ Meters frozen since ${since} — readings stopped changing; not recording or acting on them.`
+    : `⚠ Meters unreachable since ${since} — showing last known values; not recording or acting on them.`;
+}
+function backfillMessage(s) {
+  const b = s.backfill;
+  if (!b) return null;
+  if (b.running) return '⏳ Recovering meter history from the Shelly EM log…';
+  if (b.last && !b.last.error && Date.now() - b.last.at < 10 * 60_000) return `✅ Recovered ${b.last.rows} rows of meter history.`;
+  if (b.last && b.last.error && b.pending) return `⚠ Meter history recovery failed (${b.last.error}); retrying.`;
+  return null;
+}
 function renderBanner(s) {
   const b = $('banner'); const comp = s.computed; const msgs = [];
+  const stale = staleMessage(s); if (stale) msgs.push(stale);
+  const bf = backfillMessage(s); if (bf) msgs.push(bf);
+  document.body.classList.toggle('stale', Boolean(stale));
   if (!s.teslaConfigured) msgs.push('Tesla not configured — set TESLA*/TESLAMATEAPI* in .env. Monitoring only.');
   if (s.lastError && s.lastError.includes('Unable to load cars')) {
     msgs.push('⚠ TeslaMateApi can’t run commands — set ENCRYPTION_KEY (matching TeslaMate) on the TeslaMateApi container and restart it.');
@@ -447,6 +466,7 @@ async function loadChartHistory() {
   try {
     const series = await (await fetch('/api/series?hours=' + chartHours)).json();
     chartData = series.map((p) => {
+      if (p.gap) return { ts: p.ts, gap: true };
       const exportW = Math.max(0, p.exportW || 0), importW = Math.max(0, p.gridPower || 0), chargeW = Math.max(0, p.chargeW || 0);
       const solarW = solarFromSeries(p);
       return { ts: p.ts, exportW, importW, chargeW, solarW, houseW: Math.max(0, solarW + importW - exportW - chargeW) };
@@ -539,18 +559,19 @@ function drawChart() {
   const { W, H, pad } = CH;
   const xs = chartData.map((p) => p.ts);
   const x0 = xs[0], x1 = xs[xs.length - 1] || x0 + 1;
-  const max = Math.max(100, ...chartData.map((p) => Math.max(p.exportW, p.chargeW, p.solarW, p.importW || 0)));
+  const max = Math.max(100, ...chartData.filter((p) => !p.gap).map((p) => Math.max(p.exportW, p.chargeW, p.solarW, p.importW || 0)));
   const sx = (t) => pad + ((t - x0) / (x1 - x0 || 1)) * (W - 2 * pad);
   const sy = (v) => H - pad - (v / max) * (H - 2 * pad);
   chartScale = { x0, x1, max, sx, sy };
-  const line = (key, color) => {
-    const d = chartData.map((p, i) => `${i ? 'L' : 'M'}${sx(p.ts).toFixed(1)},${sy(p[key]).toFixed(1)}`).join(' ');
-    return `<path d="${d}" fill="none" stroke="${color}" stroke-width="2" stroke-linejoin="round"/>`;
-  };
-  const area = (key, color) => {
-    const top = chartData.map((p, i) => `${i ? 'L' : 'M'}${sx(p.ts).toFixed(1)},${sy(p[key]).toFixed(1)}`).join(' ');
-    return `<path d="${top} L${sx(x1).toFixed(1)},${H - pad} L${sx(x0).toFixed(1)},${H - pad} Z" fill="${color}" opacity="0.10"/>`;
-  };
+  // A gap marker (server-side hole in the history) ends the current run so
+  // an outage shows as a break, not a straight bridge across it.
+  const runs = [];
+  for (const p of chartData) { if (p.gap) { runs.push([]); continue; } if (!runs.length) runs.push([]); runs[runs.length - 1].push(p); }
+  const pathFor = (pts, key) => pts.map((p, i) => `${i ? 'L' : 'M'}${sx(p.ts).toFixed(1)},${sy(p[key]).toFixed(1)}`).join(' ');
+  const line = (key, color) => runs.filter((r) => r.length).map((r) =>
+    `<path d="${pathFor(r, key)}" fill="none" stroke="${color}" stroke-width="2" stroke-linejoin="round"/>`).join('');
+  const area = (key, color) => runs.filter((r) => r.length > 1).map((r) =>
+    `<path d="${pathFor(r, key)} L${sx(r[r.length - 1].ts).toFixed(1)},${H - pad} L${sx(r[0].ts).toFixed(1)},${H - pad} Z" fill="${color}" opacity="0.10"/>`).join('');
   // gridlines (25/50/75%)
   let grid = '';
   for (const f of [0.25, 0.5, 0.75]) { const y = sy(max * f); grid += `<line x1="${pad}" y1="${y}" x2="${W - pad}" y2="${y}" stroke="#1f2c47" stroke-width="1"/>`; }
@@ -575,7 +596,8 @@ function onHover(clientX) {
   const t = chartScale.x0 + tFrac * (chartScale.x1 - chartScale.x0);
   // nearest point
   let best = chartData[0], bd = Infinity;
-  for (const p of chartData) { const d = Math.abs(p.ts - t); if (d < bd) { bd = d; best = p; } }
+  for (const p of chartData) { if (p.gap) continue; const d = Math.abs(p.ts - t); if (d < bd) { bd = d; best = p; } }
+  if (best.gap) return;
   const xpx = (chartScale.sx(best.ts) / CH.W) * rect.width;
   cross.style.left = xpx + 'px'; cross.hidden = false;
   tip.hidden = false;

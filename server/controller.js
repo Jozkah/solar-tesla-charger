@@ -27,6 +27,8 @@ import * as db from './db.js';
 import * as stats from './stats.js';
 import { resolveWcReading } from './wc-resolve.js';
 import { isTelemetryFrozen } from './charge-detect.js';
+import { meterSignature, isActive, resolveFreshness } from './freshness.js';
+import * as backfill from './backfill.js';
 
 const C = config.control;
 
@@ -53,6 +55,8 @@ export const state = {
   cameras: null, // home dashboard: Agent DVR reachability status
   computed: null,
   charging: false,
+  stale: null, // { meters: {fresh, reason, sinceMs}, wcAgeMs, carAgeMs } — see freshness.js
+  backfill: null, // meter-history recovery status — see backfill.js
   teslaConfigured: teslaConfigured(),
   dryRun: C.dryRun,
 };
@@ -260,6 +264,41 @@ const TELEMETRY_FREEZE_MS = 5 * 60_000; // a real charge advances the kWh accumu
 // better than one blip triggering the car-telemetry fallback.
 let lastGoodWc = null;
 let lastGoodWcAt = 0;
+
+// Meter freshness. On 2026-09-03 a LAN outage left state.meters holding one
+// reading for six hours: liveCycle only set lastError, the control loop kept
+// recording and acting on the frozen values, and the chart drew six hours of
+// flat lines. These timestamps feed freshness.js; when the meters are stale
+// the control loop records nothing and commands nothing (see controlCycle),
+// and once they come back a gap worth recovering is handed to backfill.js.
+let metersOkAt = 0; // last successful readMeters()
+let metersFailedSince = 0; // first failure of the current outage (0 = healthy)
+let metersSig = ''; // last payload signature (powers + Wh counters)
+let metersSigChangedAt = 0; // when the signature last changed
+let lastSampleAt = 0; // ts of the last row written to `samples`
+let gapStart = 0; // ts the current recording gap began (0 = not in a gap)
+const METERS_MAX_AGE_MS = 30_000; // ~15 live ticks without a success
+const METERS_FREEZE_MS = 5 * 60_000; // identical payload this long while active = replayed data
+const METERS_ACTIVE_W = 50;
+const BACKFILL_MIN_GAP_MS = 10 * 60_000; // one em_data.csv bucket; shorter gaps aren't worth a download
+
+function updateStale(now) {
+  const meters = resolveFreshness({
+    okAt: metersOkAt, failedSince: metersFailedSince, sigChangedAt: metersSigChangedAt,
+    active: isActive(state.meters, METERS_ACTIVE_W), nowMs: now, maxAgeMs: METERS_MAX_AGE_MS, freezeMs: METERS_FREEZE_MS,
+  });
+  state.stale = {
+    meters,
+    wcAgeMs: lastGoodWcAt ? now - lastGoodWcAt : null,
+    carAgeMs: state.car?.ts ? now - state.car.ts : null,
+  };
+  state.backfill = backfill.getStatus();
+  return meters.fresh;
+}
+function fmtAge(ms) {
+  const m = Math.max(0, Math.round(ms / 60_000));
+  return m >= 60 ? `${Math.floor(m / 60)}h${m % 60}m` : `${m}m`;
+}
 const WC_GRACE_MS = 15_000;
 
 // --- Battery capacity auto-estimate ------------------------------------------
@@ -495,6 +534,9 @@ async function liveCycle() {
   try {
     const [meters, wcRead] = await Promise.all([shelly.readMeters(), wallconnector.readVitals()]);
     state.meters = meters;
+    metersOkAt = now; metersFailedSince = 0;
+    const sig = meterSignature(meters);
+    if (sig !== metersSig) { metersSig = sig; metersSigChangedAt = now; }
     const { wc, good } = resolveWcReading({ read: wcRead, lastGood: lastGoodWc, lastGoodAt: lastGoodWcAt, nowMs: now, graceMs: WC_GRACE_MS });
     state.wc = wc;
     // Math.max guards against a stale write if ticks ever resolve out of
@@ -507,14 +549,20 @@ async function liveCycle() {
     state.kasa = kasa.getCached(); // cached; refreshes itself at most once per pollSec
     state.cameras = cameras.getStatus(); // reachability only; video flows via proxy routes
     if (state.lastError && state.lastError.startsWith('shelly')) state.lastError = null;
-    const d = computeDecision(meters, state.car, wc);
-    state.charging = d.isCharging;
-    setComputed(meters, d);
-    maybeNotify(d);
+    // A frozen payload (success, but nothing has moved for minutes) is not a
+    // reading either: leave computed/charging as they are and don't notify.
+    if (updateStale(now)) {
+      const d = computeDecision(meters, state.car, wc);
+      state.charging = d.isCharging;
+      setComputed(meters, d);
+      maybeNotify(d);
+    }
     state.liveAt = now;
     emit();
   } catch (err) {
     state.lastError = `shelly: ${err.message}`;
+    if (!metersFailedSince) metersFailedSince = now;
+    updateStale(now);
     emit();
   } finally {
     liveBusy = false;
@@ -616,6 +664,20 @@ async function controlCycle() {
   if (!meters) {
     state.lastAction = 'waiting for meters';
     return;
+  }
+  // Blind: no decision, no command, no sample. Recording the last reading
+  // would plateau the chart and poison the day's totals; acting on it could
+  // start or stop a charge from numbers that are minutes old.
+  if (!updateStale(now)) {
+    if (!gapStart) gapStart = lastSampleAt || now;
+    const st = state.stale.meters;
+    state.lastAction = `meters ${st.reason} ${fmtAge(now - st.sinceMs)}`;
+    emit();
+    return;
+  }
+  if (gapStart) {
+    if (now - gapStart >= BACKFILL_MIN_GAP_MS) backfill.schedule(gapStart, now);
+    gapStart = 0;
   }
 
   const wc = state.wc;
@@ -734,6 +796,7 @@ async function controlCycle() {
     mode: state.override ? 'override' : state.mode,
     action,
   });
+  lastSampleAt = now;
   emit();
 }
 

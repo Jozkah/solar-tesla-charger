@@ -1,20 +1,37 @@
 // Shared downloader for the Shelly EM energy logs: every configured channel,
 // devices in parallel, the channels of one device one after the other (a Gen1
-// EM serves a single transfer at a time). Each channel gets a few attempts
-// spaced out, because the usual failure modes are transient: the device is
-// still finishing a previous transfer, or its small TCP table is full and the
-// connect times out. Used by backfill.js (live gaps) and repair.js (old runs).
+// EM serves a single transfer at a time). Used by backfill.js (live gaps) and
+// repair.js (old runs).
+//
+// A Gen1 EM keeps its "file transfer in progress" flag set until it reboots.
+// Once a download is aborted (a client that gives up, or a connect that times
+// out mid-attempt) the meter is stuck and every later request answers busy —
+// it never self-clears. So when a download fails busy or on a connect timeout,
+// we GET /reboot, wait for it to come back, and retry. Rebooting is safe: we
+// are the only client of these logs, so no legitimate transfer is in flight,
+// and the ~10 s of missed live readings is covered by the stale gate.
 import { parseEmData, fetchEmData, DEFAULT_INTERVAL_MS } from './backfill-pure.js';
 
-// A Gen1 EM keeps its "file transfer in progress" flag set until the aborted
-// transfer's client is long gone — in practice until the device reboots. So
-// "busy" can persist for a long time: space the tries out and say what
-// clears it, instead of failing fast.
 const TRIES = 6;
-const RETRY_WAIT_MS = 5 * 60_000;
-export const BUSY_HINT = 'the meter is stuck in a previous download; GET http://<ip>/reboot clears it';
+const RETRY_WAIT_MS = 60_000; // wait after a non-stuck error before retrying
+const REBOOT_WAIT_MS = 25_000; // time for a Gen1 EM to reboot and rejoin WiFi
+export const BUSY_HINT = 'the meter was stuck in a previous download';
 
-export async function downloadChannels(devices, from, to, { log = () => {}, tries = TRIES, waitMs = RETRY_WAIT_MS, fetchOne = fetchEmData } = {}) {
+// A stuck meter shows one of these; both are cleared only by a reboot.
+function isStuck(msg) {
+  return /busy/i.test(msg) || /connect timeout|UND_ERR_CONNECT|ETIMEDOUT|ECONNREFUSED/i.test(msg);
+}
+
+async function rebootDevice(ip, fetchImpl = fetch) {
+  try {
+    await fetchImpl(`http://${ip}/reboot`, { signal: AbortSignal.timeout(5000) });
+  } catch { /* the reboot drops the connection; that is expected */ }
+}
+
+export async function downloadChannels(devices, from, to, {
+  log = () => {}, tries = TRIES, waitMs = RETRY_WAIT_MS, rebootWaitMs = REBOOT_WAIT_MS,
+  fetchOne = fetchEmData, reboot = rebootDevice,
+} = {}) {
   const channels = {};
   await Promise.all(devices.map(async (dev) => {
     for (const [idx, meta] of Object.entries(dev.channels)) {
@@ -28,13 +45,21 @@ export async function downloadChannels(devices, from, to, { log = () => {}, trie
           break;
         } catch (e) {
           lastErr = e;
-          log(`[backfill] ${dev.ip} /emeter/${idx}: ${e.cause?.message || e.message || e}`);
-          if (attempt < tries) await sleep(waitMs);
+          const msg = e.cause?.message || e.message || String(e);
+          log(`[backfill] ${dev.ip} /emeter/${idx}: ${msg}`);
+          if (attempt >= tries) break;
+          if (isStuck(msg)) {
+            log(`[backfill] rebooting ${dev.ip} to clear a stuck transfer`);
+            await reboot(dev.ip);
+            await sleep(rebootWaitMs);
+          } else {
+            await sleep(waitMs);
+          }
         }
       }
       if (lastErr) {
-        const msg = lastErr.cause?.message || lastErr.message || lastErr;
-        throw new Error(`${dev.ip} /emeter/${idx}: ${msg}${/busy/i.test(msg) ? ` (${BUSY_HINT})` : ''}`);
+        const msg = lastErr.cause?.message || lastErr.message || String(lastErr);
+        throw new Error(`${dev.ip} /emeter/${idx}: ${msg}${isStuck(msg) ? ` (${BUSY_HINT}; a reboot did not clear it in ${tries} tries)` : ''}`);
       }
     }
   }));

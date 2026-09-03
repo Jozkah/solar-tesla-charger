@@ -255,6 +255,12 @@ export function deleteDayRollup(dayTs) {
   return deleteDayRollupStmt.run(dayTs).changes;
 }
 
+// Used by the flat-run repair to drop replayed rows before refilling them.
+const deleteSamplesBetweenStmt = db.prepare('DELETE FROM samples WHERE ts >= ? AND ts < ?');
+export function deleteSamplesBetween(from, to) {
+  return deleteSamplesBetweenStmt.run(from, to).changes;
+}
+
 const pruneStmt = db.prepare('DELETE FROM samples WHERE ts < ?');
 export function pruneOld() {
   pruneStmt.run(Date.now() - config.db.sampleRetentionDays * 86400_000);

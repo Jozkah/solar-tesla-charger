@@ -29,6 +29,7 @@ import { resolveWcReading } from './wc-resolve.js';
 import { isTelemetryFrozen } from './charge-detect.js';
 import { meterSignature, isActive, resolveFreshness } from './freshness.js';
 import * as backfill from './backfill.js';
+import * as repair from './repair.js';
 
 const C = config.control;
 
@@ -935,6 +936,7 @@ export function start() {
   const ctrl = () => controlCycle().catch((e) => { state.lastError = String(e?.message || e); });
   const car = () => carCycle().catch((e) => { state.lastError = String(e?.message || e); });
   const camStatus = () => cameras.refreshStatus().catch(() => {}); // home dashboard reachability
+  repair.runOnceAtStartup(); // one-time cleanup of flat runs recorded before the stale gate existed
   live();
   camStatus();
   setTimeout(car, 1500); // first car read shortly after meters

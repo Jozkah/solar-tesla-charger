@@ -6,8 +6,13 @@
 // connect times out. Used by backfill.js (live gaps) and repair.js (old runs).
 import { parseEmData, fetchEmData, DEFAULT_INTERVAL_MS } from './backfill-pure.js';
 
-const TRIES = 3;
-const RETRY_WAIT_MS = 60_000;
+// A Gen1 EM keeps its "file transfer in progress" flag set until the aborted
+// transfer's client is long gone — in practice until the device reboots. So
+// "busy" can persist for a long time: space the tries out and say what
+// clears it, instead of failing fast.
+const TRIES = 6;
+const RETRY_WAIT_MS = 5 * 60_000;
+export const BUSY_HINT = 'the meter is stuck in a previous download; GET http://<ip>/reboot clears it';
 
 export async function downloadChannels(devices, from, to, { log = () => {}, tries = TRIES, waitMs = RETRY_WAIT_MS, fetchOne = fetchEmData } = {}) {
   const channels = {};
@@ -27,7 +32,10 @@ export async function downloadChannels(devices, from, to, { log = () => {}, trie
           if (attempt < tries) await sleep(waitMs);
         }
       }
-      if (lastErr) throw new Error(`${dev.ip} /emeter/${idx}: ${lastErr.cause?.message || lastErr.message || lastErr}`);
+      if (lastErr) {
+        const msg = lastErr.cause?.message || lastErr.message || lastErr;
+        throw new Error(`${dev.ip} /emeter/${idx}: ${msg}${/busy/i.test(msg) ? ` (${BUSY_HINT})` : ''}`);
+      }
     }
   }));
   return channels;

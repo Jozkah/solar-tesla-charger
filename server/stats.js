@@ -7,6 +7,7 @@ import {
 } from './rollup.js';
 import { getBillingDay, getTariff } from './settings.js';
 import { hourBandMap, foldHoursToBands, computeCost, computeChargeCost } from './cost.js';
+import { withGaps } from './series.js';
 
 // periodBounds now lives in period.js (pure, billing-aware). Re-exported so the
 // previous public API (used by tests / callers) is preserved.
@@ -290,7 +291,8 @@ export function getSeries(hours = 1) {
       chargeAmps: r.charge_amps,
     });
   }
-  return out;
+  // Mark holes (an outage with no rows) so the charts break the line there.
+  return withGaps(out);
 }
 
 function round0(n) {

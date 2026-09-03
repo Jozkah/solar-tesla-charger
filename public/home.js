@@ -51,10 +51,33 @@ function handleState(s) {
   solarCapW = s.computed?.solarMaxW ?? null;
   solaxCapW = s.computed?.solaxMaxW ?? null;
   applyWeatherBg(s.weather);
+  renderStale(s);
   renderEnergy(s);
   renderMeters(s);
   renderPlugs(s);
   renderCamStatus(s);
+}
+
+// Stale-meter banner: the server stops recording and acting when the Shellies
+// are unreachable or replaying a frozen payload; say so instead of showing a
+// confident number that is minutes old.
+function renderStale(s) {
+  const el = $('staleBanner');
+  const m = s.stale?.meters;
+  const stale = m && !m.fresh;
+  document.body.classList.toggle('stale', Boolean(stale));
+  if (!el) return;
+  const msgs = [];
+  if (stale) {
+    const since = m.sinceMs ? hhmm(new Date(m.sinceMs)) : '';
+    msgs.push(m.reason === 'frozen' ? `⚠ Meters frozen since ${since} — not recording.` : `⚠ Meters unreachable since ${since} — showing last known values.`);
+  }
+  const b = s.backfill;
+  if (b?.running) msgs.push('⏳ Recovering meter history from the Shelly EM log…');
+  else if (b?.last && !b.last.error && Date.now() - b.last.at < 10 * 60_000) msgs.push(`✅ Recovered ${b.last.rows} rows of meter history.`);
+  else if (b?.last?.error && b.pending) msgs.push(`⚠ Meter history recovery failed (${b.last.error}); retrying.`);
+  el.hidden = !msgs.length;
+  el.innerHTML = msgs.join('<br>');
 }
 
 // --- Weather-reactive backdrop ----------------------------------------------
@@ -258,6 +281,7 @@ async function loadChart() {
   let pts = [];
   try { pts = await (await fetch(`/api/series?hours=${chartHours}`)).json(); } catch { pts = []; }
   chartSeries = (pts || []).map((p) => {
+    if (p.gap) return { ts: p.ts, gap: true };
     const exp = Math.max(0, -(p.gridPower ?? 0));
     const imp = Math.max(0, p.gridPower ?? 0);
     const car = Math.max(0, p.chargeW || 0);
@@ -381,7 +405,7 @@ function renderChart(hoverIndex) {
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, cssW, cssH);
   const padL = 4, padR = 4, padT = 10, padB = 18;
   const W = cssW - padL - padR, H = cssH - padT - padB;
-  let max = 0; for (const p of series) max = Math.max(max, p.exp, p.imp, p.sol, p.car, p.house);
+  let max = 0; for (const p of series) { if (p.gap) continue; max = Math.max(max, p.exp, p.imp, p.sol, p.car, p.house); }
   const niceMax = niceCeil(Math.max(max, 500));
   const X = (i) => padL + (series.length === 1 ? W / 2 : (i / (series.length - 1)) * W);
   const Y = (v) => padT + H - (v / niceMax) * H;
@@ -393,14 +417,21 @@ function renderChart(hoverIndex) {
     ctx.strokeStyle = 'rgba(255,255,255,.06)'; ctx.beginPath(); ctx.moveTo(padL, gy); ctx.lineTo(padL + W, gy); ctx.stroke();
     ctx.fillStyle = '#9a9aa2'; ctx.textAlign = 'left'; ctx.fillText((gv / 1000).toFixed(1) + ' kW', padL + 2, gy - 2);
   }
+  // Contiguous runs split at gap markers, so an outage breaks the line and
+  // the fill instead of bridging straight across it.
+  const runs = [];
+  series.forEach((p, i) => { if (p.gap) { runs.push([]); return; } if (!runs.length) runs.push([]); runs[runs.length - 1].push(i); });
   const drawSeries = (key, color, fill) => {
-    ctx.beginPath();
-    series.forEach((p, i) => { const x = X(i), y = Y(p[key]); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
-    ctx.lineTo(X(series.length - 1), padT + H); ctx.lineTo(X(0), padT + H); ctx.closePath();
-    ctx.fillStyle = fill; ctx.fill();
-    ctx.beginPath();
-    series.forEach((p, i) => { const x = X(i), y = Y(p[key]); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
-    ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.lineJoin = 'round'; ctx.stroke();
+    for (const run of runs) {
+      if (!run.length) continue;
+      ctx.beginPath();
+      run.forEach((i, k) => { const x = X(i), y = Y(series[i][key]); k ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
+      ctx.lineTo(X(run[run.length - 1]), padT + H); ctx.lineTo(X(run[0]), padT + H); ctx.closePath();
+      ctx.fillStyle = fill; ctx.fill();
+      ctx.beginPath();
+      run.forEach((i, k) => { const x = X(i), y = Y(series[i][key]); k ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
+      ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.lineJoin = 'round'; ctx.stroke();
+    }
   };
   drawSeries('sol', '#fbbf24', 'rgba(251,191,36,.10)');
   drawSeries('exp', '#34d399', 'rgba(52,211,153,.10)');
@@ -412,7 +443,7 @@ function renderChart(hoverIndex) {
   ctx.textAlign = 'left'; ctx.fillText(hhmm(new Date(series[0].ts)), padL, cssH - 5);
   ctx.textAlign = 'right'; ctx.fillText(hhmm(new Date(series[series.length - 1].ts)), padL + W, cssH - 5);
 
-  if (hoverIndex != null && hoverIndex >= 0 && hoverIndex < series.length) {
+  if (hoverIndex != null && hoverIndex >= 0 && hoverIndex < series.length && !series[hoverIndex].gap) {
     const hx = X(hoverIndex), p = series[hoverIndex];
     ctx.strokeStyle = 'rgba(255,255,255,.35)'; ctx.lineWidth = 1;
     ctx.beginPath(); ctx.moveTo(hx, padT); ctx.lineTo(hx, padT + H); ctx.stroke();

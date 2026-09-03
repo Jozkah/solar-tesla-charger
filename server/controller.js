@@ -26,6 +26,7 @@ import * as cameras from './cameras.js';
 import * as db from './db.js';
 import * as stats from './stats.js';
 import { resolveWcReading } from './wc-resolve.js';
+import { isTelemetryFrozen } from './charge-detect.js';
 
 const C = config.control;
 
@@ -240,6 +241,16 @@ let lastAmpCmdAt = 0; // throttle set_charging_amps to conserve Fleet API comman
 // lasts minutes, so waiting costs nothing; the car's own poll is 90s behind.
 let wcStoppedSince = 0; // first tick the WC reported no current (0 = current flowing)
 const WC_VETO_MS = 15_000;
+// Telemetry-freeze detection: tracks the car's own charge_energy_added
+// accumulator (kWh) across successful carCycle() fetches. A real charge
+// always advances this counter; a frozen-but-successful TeslaMate snapshot
+// (state still 'Charging', no API error, so car.stale never gets set) does
+// not. chargeEnergyAddedAt is only touched on a SUCCESSFUL fetch (see
+// carCycle) — a failed fetch already sets car.stale, which the existing
+// stale guard below handles, so this must not also advance on error.
+let lastChargeEnergyAdded = null;
+let chargeEnergyAddedAt = 0; // ms when charge_energy_added last CHANGED
+const TELEMETRY_FREEZE_MS = 5 * 60_000; // a real charge advances the kWh accumulator well within this
 
 // The WC is usually reachable but blips (slow/dropped poll). Carrying the last
 // successful reading through a short grace window keeps one bad poll from
@@ -315,13 +326,24 @@ function computeDecision(meters, car, wc) {
   // But the car/API can miss a stop (TeslaMateApi outage, TeslaMate lag): a frozen
   // 'Charging' snapshot would otherwise report a phantom charge forever, and the
   // phantom chargeW inflates the displayed solar via the energy-balance floor.
-  // Two guards: a stale snapshot loses its charging-asserting vote (only those —
-  // a frozen 'Stopped'/'Complete' must keep blocking the WC fallback, or a
-  // conditioning draw would read as a charge), and the WC — local ground truth
-  // for current actually flowing — vetoes a claimed charge once it has read no
-  // current for WC_VETO_MS. 'Starting' is exempt (contactor hasn't closed yet).
+  // Two guards: a stale OR telemetry-frozen snapshot loses its charging-asserting
+  // vote (only those — a frozen 'Stopped'/'Complete' must keep blocking the WC
+  // fallback, or a conditioning draw would read as a charge), and the WC — local
+  // ground truth for current actually flowing — vetoes a claimed charge once it
+  // has read no current for WC_VETO_MS. 'Starting' is exempt (contactor hasn't
+  // closed yet).
   const rawState = car?.chargingState;
-  const carState = car?.stale && (rawState === 'Charging' || rawState === 'Starting') ? null : rawState;
+  // Telemetry-freeze: catches the case a stale snapshot slips through WITHOUT
+  // an API error (so car.stale never gets set) — TeslaMate serving the same
+  // successful 'Charging' response over and over. charge_energy_added always
+  // advances during a real charge, so this can never fire on one; see
+  // charge-detect.js for the pure condition and isTelemetryFrozen's own
+  // "never on a real charge" reasoning.
+  const frozen = isTelemetryFrozen({
+    chargingState: rawState, chargeEnergyAdded: car?.chargeEnergyAdded,
+    lastChangedAt: chargeEnergyAddedAt, nowMs: Date.now(), freezeMs: TELEMETRY_FREEZE_MS,
+  });
+  const carState = (car?.stale || frozen) && (rawState === 'Charging' || rawState === 'Starting') ? null : rawState;
   // A WC reading no current can't veto while we're mid-throttle-reset: we issued
   // that stop ourselves and restart within seconds, so the session continues.
   const wcNoCurrent = wcOk && !wc.charging;
@@ -512,6 +534,13 @@ async function carCycle() {
   try {
     state.car = await tesla.getVehicleData();
     if (state.lastError && state.lastError.startsWith('tesla')) state.lastError = null;
+    // Track charge_energy_added across successful fetches only — a frozen
+    // TeslaMate snapshot repeats the same value, which is exactly the signal
+    // isTelemetryFrozen looks for. Deliberately NOT touched in the catch
+    // below: an error already sets car.stale, which the existing stale
+    // guard in computeDecision handles on its own.
+    const cea = state.car?.chargeEnergyAdded ?? null;
+    if (cea != null && cea !== lastChargeEnergyAdded) { lastChargeEnergyAdded = cea; chargeEnergyAddedAt = Date.now(); }
     emit();
   } catch (err) {
     state.lastError = `tesla: ${err.message}`;

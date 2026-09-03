@@ -14,6 +14,12 @@ const sinceIdx = args.indexOf('--since');
 const since = sinceIdx >= 0 ? Date.parse(args[sinceIdx + 1]) : 0;
 if (Number.isNaN(since)) { console.error('bad --since date'); process.exit(2); }
 
-const r = await repairFlatRuns({ since, dryRun });
+let r;
+try {
+  r = await repairFlatRuns({ since, dryRun });
+} catch (e) {
+  console.error(`[repair] failed: ${e.message || e}`);
+  process.exit(1);
+}
 if (!r.runs.length) console.log('[repair] no flat runs found');
 if (!dryRun && r.runs.length) db.setSetting(SETTING_KEY, new Date().toISOString());

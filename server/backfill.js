@@ -4,7 +4,8 @@
 import config from './config.js';
 import * as db from './db.js';
 import { startOfDayMs, nextDayMs } from './rollup.js';
-import { parseEmData, bucketsToSamples, fetchEmData, DEFAULT_INTERVAL_MS } from './backfill-pure.js';
+import { bucketsToSamples } from './backfill-pure.js';
+import { downloadChannels } from './backfill-download.js';
 
 const RETRY_DELAY_MS = 5 * 60_000;
 const MAX_TRIES = 3;
@@ -46,7 +47,7 @@ async function run() {
   const at = Date.now();
   runWindow = { from: at, to: Infinity };
   try {
-    const channels = await downloadChannels(job.from, job.to);
+    const channels = await downloadChannels(config.shelly.devices, job.from, job.to, { log: console.log });
     const samples = bucketsToSamples({ channels, from: job.from, to: job.to });
     let rows = 0;
     for (const s of samples) rows += db.recordSampleIgnore(s);
@@ -66,20 +67,6 @@ async function run() {
     status.running = false;
     if (pending && !timer) kick();
   }
-}
-
-// Devices in parallel, the two channels of one device one after the other.
-async function downloadChannels(from, to) {
-  const channels = {};
-  const { devices } = config.shelly;
-  await Promise.all(devices.map(async (dev) => {
-    for (const [idx, meta] of Object.entries(dev.channels)) {
-      const csv = await fetchEmData(dev.ip, Number(idx));
-      const rows = parseEmData(csv).filter((r) => r.ts >= from - DEFAULT_INTERVAL_MS && r.ts < to + DEFAULT_INTERVAL_MS);
-      channels[meta.key] = rows;
-    }
-  }));
-  return channels;
 }
 
 export default { schedule, getStatus };

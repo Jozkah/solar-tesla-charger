@@ -12,7 +12,8 @@ import config from './config.js';
 import * as db from './db.js';
 import { startOfDayMs, nextDayMs } from './rollup.js';
 import { findFlatRuns } from './flat-runs.js';
-import { parseEmData, bucketsToSamples, fetchEmData, DEFAULT_INTERVAL_MS } from './backfill-pure.js';
+import { bucketsToSamples } from './backfill-pure.js';
+import { downloadChannels } from './backfill-download.js';
 
 export const SETTING_KEY = 'flat_repair_v1_done_at';
 const STARTUP_DELAY_MS = 90_000; // let the live loop settle first
@@ -27,15 +28,7 @@ export async function repairFlatRuns({ since = 0, dryRun = false, log = console.
   if (!runs.length || dryRun) return summary;
 
   const from = Math.min(...runs.map((r) => r.from)), to = Math.max(...runs.map((r) => r.to));
-  const channels = {};
-  const { devices } = config.shelly;
-  await Promise.all(devices.map(async (dev) => {
-    for (const [idx, meta] of Object.entries(dev.channels)) {
-      log(`[repair] downloading ${dev.ip} /emeter/${idx}/em_data.csv …`);
-      const csv = await fetchEmData(dev.ip, Number(idx));
-      channels[meta.key] = parseEmData(csv).filter((x) => x.ts >= from - DEFAULT_INTERVAL_MS && x.ts < to + DEFAULT_INTERVAL_MS);
-    }
-  }));
+  const channels = await downloadChannels(config.shelly.devices, from, to, { log });
   summary.downloaded = true;
 
   const days = new Set();
